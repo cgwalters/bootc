@@ -78,6 +78,18 @@ jobs:
         run: sudo rm -f /bin/skopeo /usr/bin/skopeo
       - name: Free up disk space on runner
         run: sudo ./ci/clean-gha-runner.sh
+      - name: Setup swtpm
+        run: |
+          set -xeu 
+          sudo apt install linux-modules-extra-$(uname -r)
+          sudo modprobe tpm_vtpm_proxy
+          sudo apt install swtpm-tools
+          sudo mkdir /var/tmp/swtpm; swtpm_setup --tpm-state /var/tmp/swtpm
+          sudo systemd-run --unit swtpm -- swtpm chardev --vtpm-proxy --tpmstate dir=/var/tmp/swtpm --tpm2
+          while true; do
+            if sudo ls /dev/tpm*; break; fi
+            sleep 0.1
+          done
       - name: Integration tests
         run: |
           set -xeu
