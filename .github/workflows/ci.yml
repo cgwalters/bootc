@@ -81,6 +81,8 @@ jobs:
           sudo install -m 0755 target/release/tests-integration /usr/bin/bootc-integration-tests
           rm target -rf
           df -h /
+          # The ostree-container tests
+          sudo podman run --privileged --pid=host -v /:/run/host -v $(pwd):/src:ro -v /run/systemd/journal:/run/systemd/journal localhost/bootc /src/ostree-ext/ci/priv-integration.sh
           # Nondestructive but privileged tests
           sudo bootc-integration-tests host-privileged localhost/bootc
           # Finally the install-alongside suite
