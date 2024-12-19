@@ -30,15 +30,9 @@ mod utils;
 #[cfg(feature = "docgen")]
 mod docgen;
 
-#[cfg(feature = "install")]
 mod blockdev;
-#[cfg(feature = "install")]
 mod bootloader;
-#[cfg(feature = "install")]
 mod containerenv;
-#[cfg(feature = "install")]
 mod install;
-#[cfg(feature = "install")]
 mod kernel;
-#[cfg(feature = "install")]
 pub(crate) mod mount;
