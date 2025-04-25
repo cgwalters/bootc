@@ -14,7 +14,7 @@ use fn_error_context::context;
 use ostree::{gio, glib};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container::store::{ImageImporter, ImportProgress, PrepareResult, PreparedImport};
+use ostree_ext::container::store::{require_modified_container, ImageImporter, ImportProgress, PrepareResult, PreparedImport};
 use ostree_ext::oci_spec::image::{Descriptor, Digest};
 use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
@@ -554,6 +554,9 @@ async fn deploy(
     let merge_deployment = merge_deployment.map(|d| d.index() as usize);
     let stateroot = stateroot.to_string();
     let ostree_commit = image.ostree_commit.to_string();
+
+    require_modified_container(&sysroot.repo(), &ostree_commit);
+
     // GKeyFile also isn't Send! So we serialize that as a string...
     let origin_data = origin.to_data();
     let r = async_task_with_spinner(

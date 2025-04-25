@@ -9,6 +9,7 @@ use super::*;
 use crate::chunking::{self, Chunk};
 use crate::container::Decompressor;
 use crate::logging::system_repo_journal_print;
+use crate::ostree_manual::repo_file_read_to_string;
 use crate::refescape;
 use crate::sysroot::SysrootLock;
 use crate::utils::ResultExt;
@@ -480,6 +481,16 @@ fn cleanup_root(root: &Dir) -> Result<()> {
     Ok(())
 }
 
+/// HACK REMOVE ME
+pub fn require_modified_container(repo: &ostree::Repo, commit: &str) {
+    let f = repo.read_commit(&commit, gio::Cancellable::NONE).unwrap().0;
+    let f = f.resolve_relative_path("usr/etc/krb5.conf");
+    let f = f.downcast_ref::<ostree::RepoFile>().unwrap();
+    assert!(repo_file_read_to_string(f)
+        .unwrap()
+        .contains("IPA.REDHAT.COM"));
+}
+
 impl ImageImporter {
     /// The metadata key used in ostree commit metadata to serialize
     const CACHED_KEY_MANIFEST_DIGEST: &'static str = "ostree-ext.cached.manifest-digest";
@@ -922,6 +933,7 @@ impl ImageImporter {
         let mut layer_commits = Vec::new();
         let mut layer_filtered_content: MetaFilteredData = HashMap::new();
         let have_derived_layers = !import.layers.is_empty();
+        tracing::debug!("Processing layers: {}", import.layers.len());
         for layer in import.layers {
             if let Some(c) = layer.commit {
                 tracing::debug!("Reusing fetched commit {}", c);
@@ -959,6 +971,7 @@ impl ImageImporter {
                 let r = super::unencapsulate::join_fetch(r, driver)
                     .await
                     .with_context(|| format!("Parsing layer blob {}", layer.layer.digest()))?;
+                tracing::debug!("Imported layer: {}", r.commit.as_str());
                 layer_commits.push(r.commit);
                 let filtered_owned = HashMap::from_iter(r.filtered.clone());
                 if let Some((filtered, n_rest)) =
@@ -1058,6 +1071,7 @@ impl ImageImporter {
                 // Layer all subsequent commits
                 checkout_opts.process_whiteouts = true;
                 for commit in layer_commits {
+                    tracing::debug!("Unpacking {commit}");
                     repo.checkout_at(
                         Some(&checkout_opts),
                         (*td).as_raw_fd(),
@@ -1069,6 +1083,10 @@ impl ImageImporter {
                 }
 
                 let root_dir = td.open_dir(rootpath)?;
+                assert!(root_dir
+                    .read_to_string("usr/etc/krb5.conf")
+                    .unwrap()
+                    .contains("IPA.REDHAT.COM"));
 
                 let modifier =
                     ostree::RepoCommitModifier::new(ostree::RepoCommitModifierFlags::empty(), None);
@@ -1119,6 +1137,8 @@ impl ImageImporter {
                     repo.transaction_set_ref(None, &ostree_ref, Some(merged_commit.as_str()));
                 }
                 txn.commit(cancellable)?;
+
+                require_modified_container(repo, &merged_commit);
 
                 if !self.disable_gc {
                     let n: u32 = gc_image_layers_impl(repo, cancellable)?;
