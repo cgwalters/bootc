@@ -483,6 +483,7 @@ fn cleanup_root(root: &Dir) -> Result<()> {
 
 /// HACK REMOVE ME
 pub fn require_modified_container(repo: &ostree::Repo, commit: &str) {
+    dbg!(commit);
     let f = repo.read_commit(&commit, gio::Cancellable::NONE).unwrap().0;
     let f = f.resolve_relative_path("usr/etc/krb5.conf");
     let f = f.downcast_ref::<ostree::RepoFile>().unwrap();

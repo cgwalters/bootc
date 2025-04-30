@@ -817,7 +817,10 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
         let staged_digest = staged_image.map(|s| s.digest().expect("valid digest in status"));
         let fetched_digest = &fetched.manifest_digest;
         tracing::debug!("staged: {staged_digest:?}");
-        tracing::debug!("fetched: {fetched_digest}");
+        tracing::debug!(
+            "fetched: {fetched_digest} (ostree={})",
+            fetched.ostree_commit
+        );
         let staged_unchanged = staged_digest
             .as_ref()
             .map(|d| d == fetched_digest)
