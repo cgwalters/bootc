@@ -1,0 +1,12 @@
+version: 2
+updates:
+- package-ecosystem: cargo
+  directory: "/"
+  schedule:
+    interval: weekly
+  open-pull-requests-limit: 6
+  groups:
+    minor:
+      update-types:
+        - minor
+        - patch
