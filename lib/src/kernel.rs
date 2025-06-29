@@ -37,6 +37,18 @@ pub(crate) fn find_first_cmdline_arg<'a>(
     .next()
 }
 
+/// Find the subset of kernel argumetns which describe how to mount the root filesystem.
+pub(crate) fn root_args_from_cmdline<'a>(cmdline: &'a [&str]) -> Vec<&'a str> {
+    let Some(root) = crate::kernel::find_first_cmdline_arg(cmdline.iter().copied(), "root") else {
+        return Default::default();
+    };
+    let rootflags = cmdline.iter().filter(|arg| {
+        arg.starts_with(crate::kernel::ROOTFLAGS)
+            || arg.starts_with(crate::kernel::INITRD_ARG_PREFIX)
+    });
+    vec![root].into_iter().chain(rootflags.copied()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
