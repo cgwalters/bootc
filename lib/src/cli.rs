@@ -222,6 +222,7 @@ pub(crate) enum InstallOpts {
     ///
     /// This is a nondestructive variant of `install to-existing-root` that works only inside
     /// an existing bootc system.
+    #[clap(hide = true)]
     Reset(crate::install::InstallResetOpts),
     /// Execute this as the penultimate step of an installation using `install to-filesystem`.
     ///

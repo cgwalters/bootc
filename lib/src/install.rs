@@ -2042,6 +2042,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
         crate::status::get_status_require_booted(sysroot)?;
 
     let stateroots = list_stateroots(sysroot)?;
+    dbg!(&stateroots);
     let target_stateroot = if let Some(s) = opts.stateroot {
         s
     } else {
@@ -2052,13 +2053,29 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
 
     let booted_stateroot = booted_deployment.osname();
     assert!(booted_stateroot.as_str() != target_stateroot);
-    let mut new_spec = host.spec;
-    if let Some(target) = opts.target_opts.imageref()? {
+    let (fetched, spec) = if let Some(target) = opts.target_opts.imageref()? {
+        let mut new_spec = host.spec;
         new_spec.image = Some(target.into());
-    }
-    let spec = crate::deploy::RequiredHostSpec::from_spec(&new_spec)?;
-
-    let fetched = crate::deploy::pull(repo, &spec.image, None, opts.quiet, prog.clone()).await?;
+        let fetched = crate::deploy::pull(
+            repo,
+            &new_spec.image.as_ref().unwrap(),
+            None,
+            opts.quiet,
+            prog.clone(),
+        )
+        .await?;
+        (fetched, new_spec)
+    } else {
+        let imgstate = host
+            .status
+            .booted
+            .map(|b| b.query_image(repo))
+            .transpose()?
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
+        (Box::new((*imgstate).into()), host.spec)
+    };
+    let spec = crate::deploy::RequiredHostSpec::from_spec(&spec)?;
 
     // Compute the kernel arguments to inherit. By default, that's only those involved
     // in the root filesystem.
