@@ -12,3 +12,7 @@ run-container-integration: build-integration-test-image
 
 unittest *ARGS:
     podman build --jobs=4 --target units -t localhost/bootc-units --build-arg=unitargs={{ARGS}} .
+
+# Run git commit verification checks
+git-check *ARGS:
+    ./ci/git-check {{ARGS}}

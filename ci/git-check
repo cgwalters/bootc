@@ -1,0 +1,135 @@
+#!/bin/bash
+set -euo pipefail
+
+# Git commit verification script
+# This script verifies that commits in a PR or branch follow project standards
+
+# Function to check for merge commits
+check_merge_commits() {
+    local base_sha="$1"
+    local head_sha="$2"
+    
+    echo "Checking for merge commits from $base_sha..$head_sha"
+    
+    # Check for merge commits in the range
+    local merge_commits
+    merge_commits=$(git rev-list --merges "$base_sha..$head_sha" 2>/dev/null || true)
+    
+    if [ -n "$merge_commits" ]; then
+        echo "❌ Error: Found merge commits in this range:"
+        git log --oneline --merges "$base_sha..$head_sha"
+        echo ""
+        echo "Please rebase your branch to remove merge commits."
+        echo "You can do this with: git rebase <base-branch>"
+        return 1
+    fi
+    
+    echo "✅ No merge commits found"
+    return 0
+}
+
+# Function to check commit format and content
+check_commit_format() {
+    local base_sha="$1"
+    local head_sha="$2"
+    
+    echo "Checking commit format for commits from $base_sha..$head_sha"
+    
+    # Get all commit messages in the range
+    local commit_messages
+    commit_messages=$(git log --format="%s" "$base_sha..$head_sha")
+    
+    local error_count=0
+    
+    # Check each commit message
+    while IFS= read -r message; do
+        # Skip empty lines
+        [ -n "$message" ] || continue
+        
+        # Check for fixup/squash commits that shouldn't be in final PR
+        if echo "$message" | grep -qE "^(fixup|squash)!"; then
+            echo "❌ Error: Found fixup/squash commit: $message"
+            echo "   Please squash your commits before merging"
+            ((error_count++))
+            continue
+        fi
+        
+        echo "✅ Commit format OK: $message"
+    done <<< "$commit_messages"
+    
+    if [ $error_count -gt 0 ]; then
+        echo ""
+        echo "Found $error_count commit format errors"
+        return 1
+    fi
+    
+    echo "✅ All commit formats are acceptable"
+    return 0
+}
+
+# Main function
+main() {
+    # Default to checking against origin/main if no arguments provided
+    local base_ref="${1:-origin/main}"
+    local head_ref="${2:-HEAD}"
+    
+    # Resolve refs to SHAs
+    local base_sha
+    local head_sha
+    
+    if ! base_sha=$(git rev-parse "$base_ref" 2>/dev/null); then
+        echo "❌ Error: Could not resolve base ref '$base_ref'"
+        echo "   Make sure the ref exists and you have fetched the latest changes"
+        return 1
+    fi
+    
+    if ! head_sha=$(git rev-parse "$head_ref" 2>/dev/null); then
+        echo "❌ Error: Could not resolve head ref '$head_ref'"
+        return 1
+    fi
+    
+    echo "Git commit verification"
+    echo "Base: $base_ref ($base_sha)"
+    echo "Head: $head_ref ($head_sha)"
+    echo ""
+    
+    # Run all checks
+    local check_failed=0
+    
+    if ! check_merge_commits "$base_sha" "$head_sha"; then
+        check_failed=1
+    fi
+    
+    echo ""
+    
+    if ! check_commit_format "$base_sha" "$head_sha"; then
+        check_failed=1
+    fi
+    
+    if [ $check_failed -eq 1 ]; then
+        echo ""
+        echo "❌ Git commit verification failed"
+        return 1
+    fi
+    
+    echo ""
+    echo "✅ All git commit checks passed"
+    return 0
+}
+
+# Show usage if requested
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: $0 [base-ref] [head-ref]"
+    echo ""
+    echo "Verifies git commits between base-ref and head-ref."
+    echo "Defaults to checking HEAD against origin/main."
+    echo ""
+    echo "Examples:"
+    echo "  $0                    # Check HEAD against origin/main"
+    echo "  $0 main               # Check HEAD against main"
+    echo "  $0 main feature-branch # Check feature-branch against main"
+    exit 0
+fi
+
+# Run main function with all arguments
+main "$@"
