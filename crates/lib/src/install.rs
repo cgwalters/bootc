@@ -587,10 +587,9 @@ impl SourceInfo {
     fn have_selinux_from_repo(root: &Dir) -> Result<bool> {
         let cancellable = ostree::gio::Cancellable::NONE;
 
-        let commit = Task::new("Reading ostree commit", "ostree")
+        let commit = Command::new("ostree")
             .args(["--repo=/ostree/repo", "rev-parse", "--single"])
-            .quiet()
-            .read()?;
+            .run_get_string()?;
         let repo = ostree::Repo::open_at_dir(root.as_fd(), "ostree/repo")?;
         let root = repo
             .read_commit(commit.trim(), cancellable)
@@ -1071,11 +1070,10 @@ pub(crate) fn finalize_filesystem(
         .run()?;
     // Finally, freezing (and thawing) the filesystem will flush the journal, which means the next boot is clean.
     for a in ["-f", "-u"] {
-        Task::new("Flushing filesystem journal", "fsfreeze")
-            .quiet()
-            .cwd(root)?
+        Command::new("fsfreeze")
+            .cwd_dir(root.try_clone()?)
             .args([a, path.as_str()])
-            .run()?;
+            .run_capture_stderr()?;
     }
     Ok(())
 }
@@ -1115,10 +1113,9 @@ pub(crate) fn setup_tmp_mount() -> Result<()> {
     } else {
         // Note we explicitly also don't want a "nosuid" tmp, because that
         // suppresses our install_t transition
-        Task::new("Mounting tmpfs /tmp", "mount")
+        Command::new("mount")
             .args(["tmpfs", "-t", "tmpfs", "/tmp"])
-            .quiet()
-            .run()?;
+            .run_capture_stderr()?;
     }
     Ok(())
 }
@@ -1147,10 +1144,9 @@ pub(crate) fn setup_sys_mount(fstype: &str, fspath: &str) -> Result<()> {
     }
 
     // This means the host has this mounted, so we should mount it too
-    Task::new(format!("Mounting {fstype} {fspath}"), "mount")
+    Command::new("mount")
         .args(["-t", fstype, fstype, fspath])
-        .quiet()
-        .run()?;
+        .run_capture_stderr()?;
 
     Ok(())
 }

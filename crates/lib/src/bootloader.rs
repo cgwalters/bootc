@@ -1,8 +1,10 @@
+use std::process::Command;
+
 use anyhow::{anyhow, bail, Context, Result};
+use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use fn_error_context::context;
 
-use crate::task::Task;
 use bootc_blockdev::PartitionTable;
 use bootc_mount as mount;
 
@@ -22,16 +24,15 @@ pub(crate) fn install_via_bootupd(
 
     let srcroot = rootfs.join(deployment_path);
     let devpath = device.path();
-    let args = ["backend", "install", "--write-uuid"]
-        .into_iter()
-        .chain(verbose)
-        .chain(bootupd_opts.iter().copied().flatten())
-        .chain(["--src-root", srcroot.as_str()])
-        .chain(["--device", devpath.as_str(), rootfs.as_str()]);
-    Task::new("Running bootupctl to install bootloader", "bootupctl")
-        .args(args)
-        .verbose()
-        .run()
+    println!("Installing bootloader via bootupd");
+    Command::new("bootupctl")
+        .args(["backend", "install", "--write-uuid"])
+        .args(verbose)
+        .args(bootupd_opts.iter().copied().flatten())
+        .args(["--src-root", srcroot.as_str()])
+        .args(["--device", devpath.as_str(), rootfs.as_str()])
+        .log_debug()
+        .run_inherited_with_cmd_context()
 }
 
 #[context("Installing bootloader using zipl")]
@@ -97,8 +98,8 @@ pub(crate) fn install_via_zipl(device: &PartitionTable, boot_uuid: &str) -> Resu
     let ramdisk = boot_dir.join(initrd).canonicalize_utf8()?;
 
     // Execute the zipl command to install bootloader
-    let zipl_desc = format!("running zipl to install bootloader on {device_path}");
-    let zipl_task = Task::new(&zipl_desc, "zipl")
+    println!("Running zipl on {device_path}");
+    Command::new("zipl")
         .args(["--target", boot_dir.as_str()])
         .args(["--image", image.as_str()])
         .args(["--ramdisk", ramdisk.as_str()])
@@ -107,6 +108,7 @@ pub(crate) fn install_via_zipl(device: &PartitionTable, boot_uuid: &str) -> Resu
         .args(["--targettype", "SCSI"])
         .args(["--targetblocksize", "512"])
         .args(["--targetoffset", &boot_part_offset.to_string()])
-        .args(["--add-files", "--verbose"]);
-    zipl_task.verbose().run().context(zipl_desc)
+        .args(["--add-files", "--verbose"])
+        .log_debug()
+        .run_inherited_with_cmd_context()
 }

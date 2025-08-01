@@ -9,10 +9,12 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::fmt::Write as _;
 use std::io::Write;
+use std::process::Command;
 use std::process::Stdio;
 
 use anyhow::Ok;
 use anyhow::{Context, Result};
+use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use cap_std::fs::Dir;
@@ -136,13 +138,11 @@ fn mkfs<'a>(
     Ok(u)
 }
 
-#[context("Failed to wipe {dev}")]
 pub(crate) fn wipefs(dev: &Utf8Path) -> Result<()> {
-    Task::new_and_run(
-        format!("Wiping device {dev}"),
-        "wipefs",
-        ["-a", dev.as_str()],
-    )
+    println!("Wiping device {dev}");
+    Command::new("wipefs")
+        .args(["-a", dev.as_str()])
+        .run_inherited_with_cmd_context()
 }
 
 pub(crate) fn udev_settle() -> Result<()> {
