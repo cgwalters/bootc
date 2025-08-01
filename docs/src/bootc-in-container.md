@@ -1,7 +1,7 @@
 # bootc is read-only when run in a default container
 
 Currently, running e.g. `podman run <someimage> bootc upgrade` will not work.
-There's a variety of reasons for this, such as the basic fact that by
+There are a variety of reasons for this, such as the basic fact that by
 default a `docker|podman run <image>` doesn't know where to update itself;
 the image reference is not exposed into the target image (for security/operational
 reasons).
