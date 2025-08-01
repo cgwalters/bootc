@@ -8,7 +8,7 @@ reasons).
 
 ## Supported operations
 
-There are really just two supported operations in a container environment today:
+There are only two supported operations in a container environment today:
 
 - `bootc status`: This can reliably be used to detect whether the system is
   actually booted via bootc or not.
