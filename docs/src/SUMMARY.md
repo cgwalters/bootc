@@ -43,6 +43,7 @@
 
 # Bootc usage in containers
 
+- [Read-only when in a default container](bootc-in-container.md)
 - [`man bootc-container-lint`](man/bootc-container-lint.md)
 
 # Architecture
