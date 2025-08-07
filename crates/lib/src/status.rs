@@ -4,6 +4,7 @@ use std::io::IsTerminal;
 use std::io::Read;
 use std::io::Write;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use bootc_utils::try_deserialize_timestamp;
@@ -14,7 +15,6 @@ use ostree::glib;
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
-use ostree_ext::container_utils::composefs_booted;
 use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::containers_image_proxy;
 use ostree_ext::keyfileext::KeyFileExt;
@@ -54,6 +54,21 @@ impl From<ImageSignature> for ostree_container::SignatureSource {
             ImageSignature::Insecure => Self::ContainerPolicyAllowInsecure,
         }
     }
+}
+
+/// Detect if we have composefs=<digest> in /proc/cmdline
+pub(crate) fn composefs_booted() -> Result<Option<&'static str>> {
+    static CACHED_DIGEST_VALUE: OnceLock<Option<String>> = OnceLock::new();
+    if let Some(v) = CACHED_DIGEST_VALUE.get() {
+        return Ok(v.as_deref());
+    }
+    let cmdline = crate::kernel_cmdline::Cmdline::from_proc()?;
+    let Some(kv) = cmdline.find_str("composefs") else {
+        return Ok(None);
+    };
+    let Some(v) = kv.value else { return Ok(None) };
+    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v.to_owned()));
+    Ok(r.as_deref())
 }
 
 /// Fixme lower serializability into ostree-ext
@@ -484,7 +499,7 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
         let booted_deployment = sysroot.booted_deployment();
         let (_deployments, host) = get_status(&sysroot, booted_deployment.as_ref())?;
         host
-    } else if composefs_booted()? {
+    } else if composefs_booted()?.is_some() {
         composefs_deployment_status().await?
     } else {
         Default::default()
