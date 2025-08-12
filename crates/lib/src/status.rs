@@ -24,11 +24,13 @@ use ostree_ext::ostree;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::OutputFormat;
-use crate::deploy::get_sorted_boot_entries;
+use crate::composefs_consts::{
+    COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
+    ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE,
+};
+use crate::deploy::get_sorted_bls_boot_entries;
+use crate::deploy::get_sorted_uki_boot_entries;
 use crate::install::BootType;
-use crate::install::ORIGIN_KEY_BOOT;
-use crate::install::ORIGIN_KEY_BOOT_TYPE;
-use crate::install::{COMPOSEFS_STAGED_DEPLOYMENT_PATH, STATE_DIR_RELATIVE};
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -408,7 +410,7 @@ async fn boot_entry_from_composefs_deployment(
 pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     let cmdline = crate::kernel_cmdline::Cmdline::from_proc()?;
     let composefs_arg = cmdline
-        .find_str("composefs")
+        .find_str(COMPOSEFS_CMDLINE)
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
     let booted_image_verity = composefs_arg
         .value
@@ -427,7 +429,9 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
 
     let mut host = Host::new(host_spec);
 
-    let staged_deployment_id = match std::fs::File::open(COMPOSEFS_STAGED_DEPLOYMENT_PATH) {
+    let staged_deployment_id = match std::fs::File::open(format!(
+        "{COMPOSEFS_TRANSIENT_STATE_DIR}/{COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"
+    )) {
         Ok(mut f) => {
             let mut s = String::new();
             f.read_to_string(&mut s)?;
@@ -437,6 +441,9 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }?;
+
+    // NOTE: This cannot work if we support both BLS and UKI at the same time
+    let mut boot_type: Option<BootType> = None;
 
     for depl in deployments {
         let depl = depl?;
@@ -457,6 +464,21 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         let boot_entry =
             boot_entry_from_composefs_deployment(ini, depl_file_name.to_string()).await?;
 
+        // SAFETY: boot_entry.composefs will always be present
+        let boot_type_from_origin = boot_entry.composefs.as_ref().unwrap().boot_type;
+
+        match boot_type {
+            Some(current_type) => {
+                if current_type != boot_type_from_origin {
+                    anyhow::bail!("Conflicting boot types")
+                }
+            }
+
+            None => {
+                boot_type = Some(boot_type_from_origin);
+            }
+        };
+
         if depl.file_name() == booted_image_verity {
             host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
             host.status.booted = Some(boot_entry);
@@ -473,11 +495,33 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         host.status.rollback = Some(boot_entry);
     }
 
-    host.status.rollback_queued = !get_sorted_boot_entries(false)?
-        .first()
-        .ok_or(anyhow::anyhow!("First boot entry not found"))?
-        .options
-        .contains(composefs_arg.as_ref());
+    // Shouldn't really happen, but for sanity nonetheless
+    let Some(boot_type) = boot_type else {
+        anyhow::bail!("Could not determine boot type");
+    };
+
+    let boot_dir = sysroot.open_dir("boot").context("Opening boot dir")?;
+
+    match boot_type {
+        BootType::Bls => {
+            host.status.rollback_queued = !get_sorted_bls_boot_entries(&boot_dir, false)?
+                .first()
+                .ok_or(anyhow::anyhow!("First boot entry not found"))?
+                .options
+                .contains(composefs_arg.as_ref());
+        }
+
+        BootType::Uki => {
+            let mut s = String::new();
+
+            host.status.rollback_queued = !get_sorted_uki_boot_entries(&boot_dir, &mut s)?
+                .first()
+                .ok_or(anyhow::anyhow!("First boot entry not found"))?
+                .body
+                .chainloader
+                .contains(composefs_arg.as_ref())
+        }
+    };
 
     if host.status.rollback_queued {
         host.spec.boot_order = BootOrder::Rollback
