@@ -44,7 +44,7 @@ impl SysrootLock {
                 });
             }
             if !printed {
-                println!("Waiting for sysroot lock...");
+                eprintln!("Waiting for sysroot lock...");
                 printed = true;
             }
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
