@@ -950,7 +950,7 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
     //     .digest()
     //     .context("Getting digest for booted image")?;
 
-    let (repo, entries, id) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
+    let (repo, entries, id, fs) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
 
     let Some(entry) = entries.into_iter().next() else {
         anyhow::bail!("No boot entries!");
@@ -962,14 +962,14 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
     match boot_type {
         BootType::Bls => {
             boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade,
+                BootSetupType::Upgrade(&fs),
                 repo,
                 &id,
                 entry,
             )?)
         }
 
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry)?,
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entry)?,
     };
 
     write_composefs_state(
@@ -1134,7 +1134,8 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
         anyhow::bail!("Target image is undefined")
     };
 
-    let (repo, entries, id) = pull_composefs_repo(&"docker".into(), &target_imgref.image).await?;
+    let (repo, entries, id, fs) =
+        pull_composefs_repo(&"docker".into(), &target_imgref.image).await?;
 
     let Some(entry) = entries.into_iter().next() else {
         anyhow::bail!("No boot entries!");
@@ -1146,13 +1147,13 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
     match boot_type {
         BootType::Bls => {
             boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade,
+                BootSetupType::Upgrade(&fs),
                 repo,
                 &id,
                 entry,
             )?)
         }
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry)?,
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entry)?,
     };
 
     write_composefs_state(
