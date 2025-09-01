@@ -936,20 +936,6 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
 
-    // let booted_image = host
-    //     .status
-    //     .booted
-    //     .ok_or(anyhow::anyhow!("Could not find booted image"))?
-    //     .image
-    //     .ok_or(anyhow::anyhow!("Could not find booted image"))?;
-
-    // tracing::debug!("booted_image: {booted_image:#?}");
-    // tracing::debug!("imgref: {imgref:#?}");
-
-    // let digest = booted_image
-    //     .digest()
-    //     .context("Getting digest for booted image")?;
-
     let (repo, entries, id, fs) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
 
     let Some(entry) = entries.into_iter().next() else {
@@ -962,14 +948,16 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
     match boot_type {
         BootType::Bls => {
             boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade(&fs),
+                BootSetupType::Upgrade((&fs, &host)),
                 repo,
                 &id,
                 entry,
             )?)
         }
 
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entry)?,
+        BootType::Uki => {
+            setup_composefs_uki_boot(BootSetupType::Upgrade((&fs, &host)), repo, &id, entry)?
+        }
     };
 
     write_composefs_state(
@@ -1147,13 +1135,15 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
     match boot_type {
         BootType::Bls => {
             boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade(&fs),
+                BootSetupType::Upgrade((&fs, &host)),
                 repo,
                 &id,
                 entry,
             )?)
         }
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entry)?,
+        BootType::Uki => {
+            setup_composefs_uki_boot(BootSetupType::Upgrade((&fs, &host)), repo, &id, entry)?
+        }
     };
 
     write_composefs_state(
