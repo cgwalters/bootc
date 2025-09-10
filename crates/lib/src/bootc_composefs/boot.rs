@@ -97,7 +97,6 @@ impl From<&ComposefsBootEntry<Sha256HashValue>> for BootType {
         match entry {
             ComposefsBootEntry::Type1(..) => Self::Bls,
             ComposefsBootEntry::Type2(..) => Self::Uki,
-            ComposefsBootEntry::UsrLibModulesUki(..) => Self::Uki,
             ComposefsBootEntry::UsrLibModulesVmLinuz(..) => Self::Bls,
         }
     }
@@ -381,7 +380,6 @@ pub(crate) fn setup_composefs_bls_boot(
     let (bls_config, boot_digest) = match &entry {
         ComposefsBootEntry::Type1(..) => unimplemented!(),
         ComposefsBootEntry::Type2(..) => unimplemented!(),
-        ComposefsBootEntry::UsrLibModulesUki(..) => unimplemented!(),
 
         ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
@@ -578,7 +576,6 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let boot_label = match entry {
         ComposefsBootEntry::Type1(..) => unimplemented!(),
-        ComposefsBootEntry::UsrLibModulesUki(..) => unimplemented!(),
         ComposefsBootEntry::UsrLibModulesVmLinuz(..) => unimplemented!(),
 
         ComposefsBootEntry::Type2(type2_entry) => {
