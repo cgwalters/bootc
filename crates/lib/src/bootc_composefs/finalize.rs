@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use crate::bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, BootType};
@@ -9,13 +7,12 @@ use crate::{
     bootc_composefs::status::composefs_deployment_status, composefs_consts::STATE_DIR_ABS,
 };
 use anyhow::{Context, Result};
-use bootc_initramfs_setup::{mount_at_wrapper, mount_composefs_image, open_dir};
+use bootc_initramfs_setup::{mount_composefs_image, open_dir};
 use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use etc_merge::{compute_diff, merge, traverse_etc};
 use rustix::fs::{fsync, renameat, CWD};
-use rustix::mount::{unmount, UnmountFlags};
 use rustix::path::Arg;
 
 use fn_error_context::context;
@@ -38,11 +35,11 @@ pub(crate) async fn composefs_native_finalize() -> Result<()> {
     let sysroot = open_dir(CWD, "/sysroot")?;
     let composefs_fd = mount_composefs_image(&sysroot, &booted_composefs.verity, false)?;
 
-    let tempdir = tempfile::tempdir().context("Creating tempdir")?;
-    mount_at_wrapper(composefs_fd, CWD, tempdir.path())?;
+    let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
 
     // Perform the /etc merge
-    let pristine_etc = Dir::open_ambient_dir(tempdir.path(), ambient_authority())?;
+    let pristine_etc =
+        Dir::open_ambient_dir(erofs_tmp_mnt.dir.path().join("etc"), ambient_authority())?;
     let current_etc = Dir::open_ambient_dir("/etc", ambient_authority())?;
 
     let new_etc_path = Path::new(STATE_DIR_ABS)
@@ -57,7 +54,8 @@ pub(crate) async fn composefs_native_finalize() -> Result<()> {
     let diff = compute_diff(&pristine_files, &current_files)?;
     merge(&current_etc, &current_files, &new_etc, &new_files, diff)?;
 
-    unmount(tempdir.path(), UnmountFlags::DETACH).context("Unmounting tempdir")?;
+    // Unmount EROFS
+    drop(erofs_tmp_mnt);
 
     let sysroot_parent = get_sysroot_parent_dev()?;
     // NOTE: Assumption here that ESP will always be present

@@ -21,7 +21,7 @@ use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
 use composefs::tree::ImageError;
 use rustix::fs::{
-    lgetxattr, llistxattr, lsetxattr, readlinkat, symlinkat, AtFlags, Gid, Uid, XattrFlags,
+    AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat, symlinkat,
 };
 
 /// Metadata associated with a file, directory, or symlink entry.

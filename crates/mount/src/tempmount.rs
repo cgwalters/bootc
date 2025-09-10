@@ -1,9 +1,11 @@
+use std::os::fd::AsFd;
+
 use anyhow::{Context, Result};
 
 use camino::Utf8Path;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use fn_error_context::context;
-use rustix::mount::{unmount, UnmountFlags};
+use rustix::mount::{move_mount, unmount, MoveMountFlags, UnmountFlags};
 
 pub struct TempMount {
     pub dir: tempfile::TempDir,
@@ -21,12 +23,46 @@ impl TempMount {
 
         crate::mount(dev, utf8path)?;
 
-        // There's a case here where if the following open fails, we won't unmount which should be
-        // unlikely
         let fd = Dir::open_ambient_dir(tempdir.path(), ambient_authority())
-            .with_context(|| format!("Opening {:?}", tempdir.path()))?;
+            .with_context(|| format!("Opening {:?}", tempdir.path()));
 
-        Ok(TempMount { dir: tempdir, fd })
+        let fd = match fd {
+            Ok(fd) => fd,
+            Err(e) => {
+                unmount(tempdir.path(), UnmountFlags::DETACH)?;
+                Err(e)?
+            }
+        };
+
+        Ok(Self { dir: tempdir, fd })
+    }
+
+    /// Mount and fd acquired with `open_tree` like syscall
+    #[context("Mounting fd")]
+    pub fn mount_fd(mnt_fd: impl AsFd) -> Result<Self> {
+        let tempdir = tempfile::TempDir::new()?;
+
+        move_mount(
+            mnt_fd.as_fd(),
+            "",
+            rustix::fs::CWD,
+            tempdir.path(),
+            MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+        )
+        .context("move_mount")?;
+
+        let fd = Dir::open_ambient_dir(tempdir.path(), ambient_authority())
+            .with_context(|| format!("Opening {:?}", tempdir.path()));
+
+        let fd = match fd {
+            Ok(fd) => fd,
+            Err(e) => {
+                unmount(tempdir.path(), UnmountFlags::DETACH)?;
+                Err(e)?
+            }
+        };
+
+        Ok(Self { dir: tempdir, fd })
     }
 }
 
