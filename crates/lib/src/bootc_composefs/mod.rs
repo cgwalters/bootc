@@ -5,3 +5,4 @@ pub(crate) mod state;
 pub(crate) mod status;
 pub(crate) mod switch;
 pub(crate) mod update;
+pub(crate) mod finalize;

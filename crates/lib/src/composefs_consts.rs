@@ -26,12 +26,8 @@ pub(crate) const ORIGIN_KEY_BOOT_DIGEST: &str = "digest";
 pub(crate) const BOOT_LOADER_ENTRIES: &str = "entries";
 /// Filename for staged boot loader entries
 pub(crate) const STAGED_BOOT_LOADER_ENTRIES: &str = "entries.staged";
-/// Filename for rollback boot loader entries
-pub(crate) const ROLLBACK_BOOT_LOADER_ENTRIES: &str = STAGED_BOOT_LOADER_ENTRIES;
 
 /// Filename for grub user config
 pub(crate) const USER_CFG: &str = "user.cfg";
 /// Filename for staged grub user config
 pub(crate) const USER_CFG_STAGED: &str = "user.cfg.staged";
-/// Filename for rollback grub user config
-pub(crate) const USER_CFG_ROLLBACK: &str = USER_CFG_STAGED;
