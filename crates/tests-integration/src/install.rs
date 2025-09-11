@@ -26,6 +26,10 @@ pub(crate) fn delete_ostree(sh: &Shell) -> Result<(), anyhow::Error> {
     if !Path::new("/ostree/").exists() {
         return Ok(());
     }
+    // TODO: This shouldn't be leaking out of installs
+    cmd!(sh, "sudo umount -Rl /ostree/bootc/storage/overlay")
+        .ignore_status()
+        .run()?;
     cmd!(sh, "sudo /bin/sh -c 'rm -rf /ostree/'").run()?;
     Ok(())
 }

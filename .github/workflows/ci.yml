@@ -56,7 +56,9 @@ jobs:
         run: sudo apt update && sudo apt install just
       - uses: actions/checkout@v4
       - name: Build and run container integration tests
-        run: sudo just run-container-integration run-container-external-tests
+        run: |
+          sudo just build
+          sudo just run-container-integration run-container-external-tests
   container-continuous:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'control/skip-ci') }}
     runs-on: ubuntu-24.04
@@ -105,7 +107,8 @@ jobs:
           set -xeu
           # Build images to test; TODO investigate doing single container builds
           # via GHA and pushing to a temporary registry to share among workflows?
-          sudo just build-integration-test-image
+          sudo just build
+          sudo just build-install-test-image
           sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
           # TODO move into a container, and then have this tool run other containers
@@ -120,9 +123,9 @@ jobs:
           sudo podman run --privileged --pid=host -v /:/run/host -v $(pwd):/src:ro -v /var/tmp:/var/tmp \
             -v /run/dbus:/run/dbus -v /run/systemd:/run/systemd localhost/bootc /src/crates/ostree-ext/ci/priv-integration.sh
           # Nondestructive but privileged tests
-          sudo bootc-integration-tests host-privileged localhost/bootc-integration
+          sudo bootc-integration-tests host-privileged localhost/bootc-integration-install
           # Install tests
-          sudo bootc-integration-tests install-alongside localhost/bootc-integration
+          sudo bootc-integration-tests install-alongside localhost/bootc-integration-install
 
           # system-reinstall-bootc tests
           cargo build --release -p system-reinstall-bootc

@@ -13,11 +13,6 @@ use xshell::{cmd, Shell};
 mod man;
 
 const NAME: &str = "bootc";
-const TEST_IMAGES: &[&str] = &[
-    "quay.io/curl/curl-base:latest",
-    "quay.io/curl/curl:latest",
-    "registry.access.redhat.com/ubi9/podman:latest",
-];
 const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
     "--sort=name",
     "--owner=0",
@@ -43,7 +38,6 @@ const TASKS: &[(&str, fn(&Shell) -> Result<()>)] = &[
     ("package", package),
     ("package-srpm", package_srpm),
     ("spec", spec),
-    ("test-tmt", test_tmt),
 ];
 
 fn try_main() -> Result<()> {
@@ -98,78 +92,6 @@ fn gitrev(sh: &Shell) -> Result<String> {
         // We always inject the timestamp first to ensure that newer is better.
         Ok(format!("{timestamp}.g{abbrev_commit}"))
     }
-}
-
-#[context("test-integration")]
-fn all_plan_files(sh: &Shell) -> Result<Vec<(u32, String)>> {
-    // We need to split most of our tests into separate plans because tmt doesn't
-    // support automatic isolation. (xref)
-    let mut all_plan_files =
-        sh.read_dir("plans")?
-            .into_iter()
-            .try_fold(Vec::new(), |mut acc, ent| -> Result<_> {
-                let path = Utf8PathBuf::try_from(ent)?;
-                let Some(ext) = path.extension() else {
-                    return Ok(acc);
-                };
-                if ext != "fmf" {
-                    return Ok(acc);
-                }
-                let stem = path.file_stem().expect("file stem");
-                let Some((prefix, suffix)) = stem.split_once('-') else {
-                    return Ok(acc);
-                };
-                if prefix != "test" {
-                    return Ok(acc);
-                }
-                let Some((priority, _)) = suffix.split_once('-') else {
-                    anyhow::bail!("Invalid test {path}");
-                };
-                let priority: u32 = priority
-                    .parse()
-                    .with_context(|| format!("Parsing {path}"))?;
-                acc.push((priority, stem.to_string()));
-                Ok(acc)
-            })?;
-    all_plan_files.sort_by_key(|v| v.0);
-    println!("Discovered plans: {all_plan_files:?}");
-    Ok(all_plan_files)
-}
-
-#[context("test-integration")]
-fn test_tmt(sh: &Shell) -> Result<()> {
-    let mut tests = all_plan_files(sh)?;
-    if let Ok(name) = std::env::var("TMT_TEST") {
-        tests.retain(|x| x.1.as_str() == name);
-        if tests.is_empty() {
-            anyhow::bail!("Failed to match test: {name}");
-        }
-    }
-
-    // pull some small images that are used for LBI installation tests
-    cmd!(sh, "podman pull {TEST_IMAGES...}").run()?;
-
-    for (_prio, name) in tests {
-        // cc https://pagure.io/testcloud/pull-request/174
-        cmd!(sh, "rm -vf /var/tmp/tmt/testcloud/images/disk.qcow2").run()?;
-        let verbose_enabled = std::env::var("TMT_VERBOSE")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-
-        let verbose = if verbose_enabled == 1 {
-            Some("-vvvvv".to_string())
-        } else {
-            None
-        };
-
-        if let Err(e) = cmd!(sh, "tmt {verbose...} run plans -n {name}").run() {
-            // tmt annoyingly does not output errors by default
-            let _ = cmd!(sh, "tmt run -l report -vvv").run();
-            return Err(e.into());
-        }
-    }
-    Ok(())
 }
 
 /// Return a string formatted version of the git commit timestamp, up to the minute

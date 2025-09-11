@@ -1,3 +1,0 @@
-summary: Run bootc install to-existing-root to deploy bootc image
-test: ./bootc-install-provision.sh
-duration: 30m

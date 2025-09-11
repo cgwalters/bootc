@@ -96,9 +96,6 @@ bin-archive: all
 test-bin-archive: all
 	$(MAKE) install-all DESTDIR=tmp-install && $(TAR_REPRODUCIBLE) --zstd -C tmp-install -cf target/bootc.tar.zst . && rm tmp-install -rf
 
-test-tmt:
-	cargo xtask test-tmt
-
 test:
 	tests/build.sh && tests/test.sh
 
