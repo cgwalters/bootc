@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::{
-    rollback::composefs_rollback, status::composefs_booted, switch::switch_composefs,
-    update::upgrade_composefs,
+    finalize::composefs_native_finalize, rollback::composefs_rollback, status::composefs_booted,
+    switch::switch_composefs, update::upgrade_composefs,
 };
 use crate::deploy::RequiredHostSpec;
 use crate::lints;
@@ -712,6 +712,8 @@ pub(crate) enum Opt {
     #[clap(hide(true))]
     #[cfg(feature = "docgen")]
     Man(ManOpts),
+    #[cfg(feature = "composefs-backend")]
+    ComposefsFinalizeStaged,
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1575,6 +1577,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
         },
+
+        #[cfg(feature = "composefs-backend")]
+        Opt::ComposefsFinalizeStaged => composefs_native_finalize().await,
     }
 }
 

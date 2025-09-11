@@ -12,10 +12,59 @@ use crate::bootc_composefs::status::{composefs_deployment_status, get_sorted_bls
 use crate::{
     bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_uki_boot_entries},
     composefs_consts::{
-        BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_ROLLBACK,
+        BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_STAGED,
     },
     spec::BootOrder,
 };
+
+pub(crate) fn rename_exchange_user_cfg(entries_dir: &Dir) -> Result<()> {
+    tracing::debug!("Atomically exchanging {USER_CFG_STAGED} and {USER_CFG}");
+    renameat_with(
+        &entries_dir,
+        USER_CFG_STAGED,
+        &entries_dir,
+        USER_CFG,
+        RenameFlags::EXCHANGE,
+    )
+    .context("renameat")?;
+
+    tracing::debug!("Removing {USER_CFG_STAGED}");
+    rustix::fs::unlinkat(&entries_dir, USER_CFG_STAGED, AtFlags::empty()).context("unlinkat")?;
+
+    tracing::debug!("Syncing to disk");
+    let entries_dir = entries_dir
+        .reopen_as_ownedfd()
+        .context(format!("Reopening entries dir as owned fd"))?;
+
+    fsync(entries_dir).context(format!("fsync entries dir"))?;
+
+    Ok(())
+}
+
+pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
+    tracing::debug!("Atomically exchanging {STAGED_BOOT_LOADER_ENTRIES} and {BOOT_LOADER_ENTRIES}");
+    renameat_with(
+        &entries_dir,
+        STAGED_BOOT_LOADER_ENTRIES,
+        &entries_dir,
+        BOOT_LOADER_ENTRIES,
+        RenameFlags::EXCHANGE,
+    )
+    .context("renameat")?;
+
+    tracing::debug!("Removing {STAGED_BOOT_LOADER_ENTRIES}");
+    rustix::fs::unlinkat(&entries_dir, STAGED_BOOT_LOADER_ENTRIES, AtFlags::REMOVEDIR)
+        .context("unlinkat")?;
+
+    tracing::debug!("Syncing to disk");
+    let entries_dir = entries_dir
+        .reopen_as_ownedfd()
+        .with_context(|| format!("Reopening /sysroot/boot/loader as owned fd"))?;
+
+    fsync(entries_dir).context("fsync")?;
+
+    Ok(())
+}
 
 #[context("Rolling back UKI")]
 pub(crate) fn rollback_composefs_uki() -> Result<()> {
@@ -45,31 +94,10 @@ pub(crate) fn rollback_composefs_uki() -> Result<()> {
             .with_context(|| format!("Opening {user_cfg_path:?}"))?;
 
     entries_dir
-        .atomic_write(USER_CFG_ROLLBACK, buffer)
-        .with_context(|| format!("Writing to {USER_CFG_ROLLBACK}"))?;
+        .atomic_write(USER_CFG_STAGED, buffer)
+        .with_context(|| format!("Writing to {USER_CFG_STAGED}"))?;
 
-    tracing::debug!("Atomically exchanging for {USER_CFG_ROLLBACK} and {USER_CFG}");
-    renameat_with(
-        &entries_dir,
-        USER_CFG_ROLLBACK,
-        &entries_dir,
-        USER_CFG,
-        RenameFlags::EXCHANGE,
-    )
-    .context("renameat")?;
-
-    tracing::debug!("Removing {USER_CFG_ROLLBACK}");
-    rustix::fs::unlinkat(&entries_dir, USER_CFG_ROLLBACK, AtFlags::empty()).context("unlinkat")?;
-
-    tracing::debug!("Syncing to disk");
-    fsync(
-        entries_dir
-            .reopen_as_ownedfd()
-            .with_context(|| format!("Reopening {user_cfg_path:?} as owned fd"))?,
-    )
-    .with_context(|| format!("fsync {user_cfg_path:?}"))?;
-
-    Ok(())
+    rename_exchange_user_cfg(&entries_dir)
 }
 
 #[context("Rolling back BLS")]
@@ -93,9 +121,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     assert!(all_configs.len() == 2);
 
     // Write these
-    let dir_path = PathBuf::from(format!(
-        "/sysroot/boot/loader/{ROLLBACK_BOOT_LOADER_ENTRIES}",
-    ));
+    let dir_path = PathBuf::from(format!("/sysroot/boot/loader/{STAGED_BOOT_LOADER_ENTRIES}",));
     create_dir_all(&dir_path).with_context(|| format!("Failed to create dir: {dir_path:?}"))?;
 
     let rollback_entries_dir =
@@ -124,30 +150,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     let dir = Dir::open_ambient_dir("/sysroot/boot/loader", cap_std::ambient_authority())
         .context("Opening loader dir")?;
 
-    tracing::debug!(
-        "Atomically exchanging for {ROLLBACK_BOOT_LOADER_ENTRIES} and {BOOT_LOADER_ENTRIES}"
-    );
-    renameat_with(
-        &dir,
-        ROLLBACK_BOOT_LOADER_ENTRIES,
-        &dir,
-        BOOT_LOADER_ENTRIES,
-        RenameFlags::EXCHANGE,
-    )
-    .context("renameat")?;
-
-    tracing::debug!("Removing {ROLLBACK_BOOT_LOADER_ENTRIES}");
-    rustix::fs::unlinkat(&dir, ROLLBACK_BOOT_LOADER_ENTRIES, AtFlags::empty())
-        .context("unlinkat")?;
-
-    tracing::debug!("Syncing to disk");
-    fsync(
-        dir.reopen_as_ownedfd()
-            .with_context(|| format!("Reopening /sysroot/boot/loader as owned fd"))?,
-    )
-    .context("fsync")?;
-
-    Ok(())
+    rename_exchange_bls_entries(&dir)
 }
 
 #[context("Rolling back composefs")]

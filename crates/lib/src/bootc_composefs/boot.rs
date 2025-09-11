@@ -125,6 +125,19 @@ pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
     Ok((esp.node, esp.uuid))
 }
 
+pub fn get_sysroot_parent_dev() -> Result<String> {
+    let sysroot = Utf8PathBuf::from("/sysroot");
+
+    let fsinfo = inspect_filesystem(&sysroot)?;
+    let parent_devices = find_parent_devices(&fsinfo.source)?;
+
+    let Some(parent) = parent_devices.into_iter().next() else {
+        anyhow::bail!("Could not find parent device for mountpoint /sysroot");
+    };
+
+    return Ok(parent);
+}
+
 /// Compute SHA256Sum of VMlinuz + Initrd
 ///
 /// # Arguments
@@ -310,20 +323,12 @@ pub(crate) fn setup_composefs_bls_boot(
         }
 
         BootSetupType::Upgrade((fs, host)) => {
-            let sysroot = Utf8PathBuf::from("/sysroot");
-
-            let fsinfo = inspect_filesystem(&sysroot)?;
-            let parent_devices = find_parent_devices(&fsinfo.source)?;
-
-            let Some(parent) = parent_devices.into_iter().next() else {
-                anyhow::bail!("Could not find parent device for mountpoint /sysroot");
-            };
-
+            let sysroot_parent = get_sysroot_parent_dev()?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             (
                 Utf8PathBuf::from("/sysroot"),
-                get_esp_partition(&parent)?.0,
+                get_esp_partition(&sysroot_parent)?.0,
                 [
                     format!("root=UUID={DPS_UUID}"),
                     RW_KARG.to_string(),
@@ -554,15 +559,9 @@ pub(crate) fn setup_composefs_uki_boot(
 
         BootSetupType::Upgrade(..) => {
             let sysroot = Utf8PathBuf::from("/sysroot");
+            let sysroot_parent = get_sysroot_parent_dev()?;
 
-            let fsinfo = inspect_filesystem(&sysroot)?;
-            let parent_devices = find_parent_devices(&fsinfo.source)?;
-
-            let Some(parent) = parent_devices.into_iter().next() else {
-                anyhow::bail!("Could not find parent device for mountpoint /sysroot");
-            };
-
-            (sysroot, get_esp_partition(&parent)?.0, None)
+            (sysroot, get_esp_partition(&sysroot_parent)?.0, None)
         }
     };
 

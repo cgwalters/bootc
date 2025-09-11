@@ -3,6 +3,7 @@ use std::{fs::create_dir_all, process::Command};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::Cmdline;
+use bootc_mount::tempmount::TempMount;
 use bootc_utils::CommandRunExt;
 use camino::Utf8PathBuf;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
@@ -11,8 +12,7 @@ use fn_error_context::context;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use rustix::{
-    fs::{open, Mode, OFlags, CWD},
-    mount::{unmount, UnmountFlags},
+    fs::{open, Mode, OFlags},
     path::Arg,
 };
 
@@ -71,21 +71,16 @@ pub(crate) fn copy_etc_to_state(
 
     let composefs_fd = bootc_initramfs_setup::mount_composefs_image(&sysroot_fd, &erofs_id, false)?;
 
-    let tempdir = tempfile::tempdir().context("Creating tempdir")?;
-
-    bootc_initramfs_setup::mount_at_wrapper(composefs_fd, CWD, tempdir.path())?;
+    let tempdir = TempMount::mount_fd(composefs_fd)?;
 
     // TODO: Replace this with a function to cap_std_ext
     let cp_ret = Command::new("cp")
         .args([
             "-a",
-            &format!("{}/etc/.", tempdir.path().as_str()?),
+            &format!("{}/etc/.", tempdir.dir.path().as_str()?),
             &format!("{state_path}/etc/."),
         ])
         .run_capture_stderr();
-
-    // Unmount regardless of copy succeeding
-    unmount(tempdir.path(), UnmountFlags::DETACH).context("Unmounting composefs")?;
 
     cp_ret
 }
