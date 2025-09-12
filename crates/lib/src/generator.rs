@@ -1,12 +1,19 @@
 use std::io::BufRead;
 
 use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use cap_std::fs::Dir;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 use fn_error_context::context;
-use ostree_ext::container_utils::is_ostree_booted_in;
+use ostree_ext::container_utils::{is_ostree_booted_in, OSTREE_BOOTED};
 use rustix::{fd::AsFd, fs::StatVfsMountFlags};
 
+use crate::install::DESTRUCTIVE_CLEANUP;
+
+const STATUS_ONBOOT_UNIT: &str = "bootc-status-updated-onboot.target";
+const STATUS_PATH_UNIT: &str = "bootc-status-updated.path";
+const CLEANUP_UNIT: &str = "bootc-destructive-cleanup.service";
+const MULTI_USER_TARGET: &str = "multi-user.target";
 const EDIT_UNIT: &str = "bootc-fstab-edit.service";
 const FSTAB_ANACONDA_STAMP: &str = "Created by anaconda";
 pub(crate) const BOOTC_EDITED_STAMP: &str = "Updated by bootc-fstab-edit.service";
@@ -47,9 +54,50 @@ pub(crate) fn fstab_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
     Ok(false)
 }
 
+pub(crate) fn enable_unit(unitdir: &Dir, name: &str, target: &str) -> Result<()> {
+    let wants = Utf8PathBuf::from(format!("{target}.wants"));
+    unitdir
+        .create_dir_all(&wants)
+        .with_context(|| format!("Creating {wants}"))?;
+    let source = format!("/usr/lib/systemd/system/{name}");
+    let target = wants.join(name);
+    unitdir.remove_file_optional(&target)?;
+    unitdir
+        .symlink_contents(&source, &target)
+        .with_context(|| format!("Writing {name}"))?;
+    Ok(())
+}
+
+/// Enable our units
+pub(crate) fn unit_enablement_impl(sysroot: &Dir, unit_dir: &Dir) -> Result<()> {
+    for unit in [STATUS_ONBOOT_UNIT, STATUS_PATH_UNIT] {
+        enable_unit(unit_dir, unit, MULTI_USER_TARGET)?;
+    }
+
+    if sysroot.try_exists(DESTRUCTIVE_CLEANUP)? {
+        tracing::debug!("Found {DESTRUCTIVE_CLEANUP}");
+        enable_unit(unit_dir, CLEANUP_UNIT, MULTI_USER_TARGET)?;
+    } else {
+        tracing::debug!("Didn't find {DESTRUCTIVE_CLEANUP}");
+    }
+
+    Ok(())
+}
+
 /// Main entrypoint for the generator
 pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
-    // Right now we only do something if the root is a read-only overlayfs (a composefs really)
+    // Only run on ostree systems
+    if !root.try_exists(OSTREE_BOOTED)? {
+        return Ok(());
+    }
+
+    let Some(ref sysroot) = root.open_dir_optional("sysroot")? else {
+        return Ok(());
+    };
+
+    unit_enablement_impl(sysroot, unit_dir)?;
+
+    // Also only run if the root is a read-only overlayfs (a composefs really)
     let st = rustix::fs::fstatfs(root.as_fd())?;
     if st.f_type != libc::OVERLAYFS_SUPER_MAGIC {
         tracing::trace!("Root is not overlayfs");
@@ -62,6 +110,7 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
     }
     let updated = fstab_generator_impl(root, unit_dir)?;
     tracing::trace!("Generated fstab: {updated}");
+
     Ok(())
 }
 
@@ -89,12 +138,16 @@ ExecStart=bootc internals fixup-etc-fstab\n\
 
 #[cfg(test)]
 mod tests {
+    use camino::Utf8Path;
+    use cap_std_ext::cmdext::CapStdExtCommandExt as _;
+
     use super::*;
 
     fn fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         tempdir.create_dir("etc")?;
         tempdir.create_dir("run")?;
+        tempdir.create_dir("sysroot")?;
         tempdir.create_dir_all("run/systemd/system")?;
         Ok(tempdir)
     }
@@ -106,6 +159,53 @@ mod tests {
         fstab_generator_impl(&tempdir, &unit_dir).unwrap();
 
         assert_eq!(unit_dir.entries()?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_units() -> Result<()> {
+        let tempdir = &fixture()?;
+        let sysroot = &tempdir.open_dir("sysroot").unwrap();
+        let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+
+        let verify = |wantsdir: &Dir, n: u32| -> Result<()> {
+            assert_eq!(unit_dir.entries()?.count(), 1);
+            let r = wantsdir.read_link_contents(STATUS_ONBOOT_UNIT)?;
+            let r: Utf8PathBuf = r.try_into().unwrap();
+            assert_eq!(r, format!("/usr/lib/systemd/system/{STATUS_ONBOOT_UNIT}"));
+            assert_eq!(wantsdir.entries()?.count(), n as usize);
+            anyhow::Ok(())
+        };
+
+        // Explicitly run this twice to test idempotency
+
+        unit_enablement_impl(sysroot, &unit_dir).unwrap();
+        unit_enablement_impl(sysroot, &unit_dir).unwrap();
+        let wantsdir = &unit_dir.open_dir("multi-user.target.wants")?;
+        verify(wantsdir, 2)?;
+        assert!(wantsdir
+            .symlink_metadata_optional(CLEANUP_UNIT)
+            .unwrap()
+            .is_none());
+
+        // Now create sysroot and rerun the generator
+        unit_enablement_impl(sysroot, &unit_dir).unwrap();
+        verify(wantsdir, 2)?;
+
+        // Create the destructive stamp
+        sysroot
+            .create_dir_all(Utf8Path::new(DESTRUCTIVE_CLEANUP).parent().unwrap())
+            .unwrap();
+        sysroot.atomic_write(DESTRUCTIVE_CLEANUP, b"").unwrap();
+        unit_enablement_impl(sysroot, unit_dir).unwrap();
+        verify(wantsdir, 3)?;
+
+        // And now the unit should be enabled
+        assert!(wantsdir
+            .symlink_metadata(CLEANUP_UNIT)
+            .unwrap()
+            .is_symlink());
+
         Ok(())
     }
 

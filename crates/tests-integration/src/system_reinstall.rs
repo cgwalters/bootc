@@ -96,7 +96,6 @@ pub(crate) fn run(image: &str, testargs: libtest_mimic::Arguments) -> Result<()>
             let files = [
                 "usr/lib/bootc/fedora-bootc-destructive-cleanup",
                 "usr/lib/systemd/system/bootc-destructive-cleanup.service",
-                "usr/lib/systemd/system/multi-user.target.wants/bootc-destructive-cleanup.service",
                 "etc/tmpfiles.d/bootc-root-ssh.conf",
             ];
 

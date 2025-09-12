@@ -77,7 +77,7 @@ const RUN_BOOTC: &str = "/run/bootc";
 /// The default path for the host rootfs
 const ALONGSIDE_ROOT_MOUNT: &str = "/target";
 /// Global flag to signal the booted system was provisioned via an alongside bootc install
-const DESTRUCTIVE_CLEANUP: &str = "bootc-destructive-cleanup";
+pub(crate) const DESTRUCTIVE_CLEANUP: &str = "etc/bootc-destructive-cleanup";
 /// This is an ext4 special directory we need to ignore.
 const LOST_AND_FOUND: &str = "lost+found";
 /// The filename of the composefs EROFS superblock; TODO move this into ostree
@@ -1494,7 +1494,7 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
         if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
             let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
             tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
-            sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
+            sysroot_dir.atomic_write(DESTRUCTIVE_CLEANUP, b"")?;
         }
 
         // We must drop the sysroot here in order to close any open file
