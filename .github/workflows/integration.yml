@@ -30,6 +30,9 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - name: Free up disk space on runner
+        run: sudo ./ci/clean-gha-runner.sh
+
       - name: Set architecture variable
         id: set_arch
         run: echo "ARCH=$(arch)" >> $GITHUB_ENV
@@ -37,6 +40,10 @@ jobs:
       - name: Build container and disk image
         run: |
           sudo tests/build.sh ${{ matrix.test_os }}
+
+      - name: Run container tests
+        run:
+          sudo just test-container
 
       - name: Archive disk image
         uses: actions/upload-artifact@v4
@@ -52,10 +59,13 @@ jobs:
       matrix:
         test_os: [fedora-42, fedora-43, centos-9, centos-10]
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free up disk space on runner
+        run: sudo ./ci/clean-gha-runner.sh
 
       - name: Set architecture variable
         id: set_arch
@@ -65,7 +75,7 @@ jobs:
         run: |
           sudo apt-get update
           # see https://tmt.readthedocs.io/en/stable/overview.html#install
-          sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-kvm qemu-utils libvirt-daemon-system
+          sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-kvm qemu-utils libvirt-daemon-system just
           pip install --user "tmt[provision-virtual]"
 
       - name: Create folder to save disk image
@@ -87,9 +97,9 @@ jobs:
       - name: Workaround https://github.com/teemtee/testcloud/issues/18
         run: sudo rm -f /usr/bin/chcon && sudo ln -sr /usr/bin/true /usr/bin/chcon
 
-      - name: Run test
+      - name: Run all TMT tests
         run: |
-          tests/run-tmt.sh
+          just test-tmt-nobuild
 
       - name: Archive TMT logs
         if: always()

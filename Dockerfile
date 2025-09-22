@@ -44,7 +44,7 @@ ARG initramfs=0
 # This installs our package dependencies, and we want to cache it independently of the rest.
 # Basically we don't want changing a .rs file to blow out the cache of packages. So we only
 # copy files necessary
-COPY contrib/packaging/bootc.spec /tmp/bootc.spec
+COPY contrib/packaging /tmp/packaging
 RUN <<EORUN
 set -xeuo pipefail
 . /usr/lib/os-release
@@ -54,9 +54,11 @@ case $ID in
 esac
 # Handle version skew, xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174
 dnf -y distro-sync ostree{,-libs} systemd
-dnf -y builddep /tmp/bootc.spec
-# Extra dependencies
-dnf -y install git-core
+# Install base build requirements
+dnf -y builddep /tmp/packaging/bootc.spec
+# And extra packages
+grep -Ev -e '^#' /tmp/packaging/fedora-extra.txt | xargs dnf -y install
+rm /tmp/packaging -rf
 EORUN
 # Now copy the rest of the source
 COPY --from=src /src /src
@@ -72,11 +74,16 @@ if test "${initramfs:-}" = 1; then
 fi
 EORUN
 
-# This "build" just runs our unit tests
+# This "build" includes our unit tests
 FROM build as units
-ARG unitargs
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome \
-    cargo test --locked $unitargs
+# A place that we're more likely to be able to set xattrs
+VOLUME /var/tmp
+ENV TMPDIR=/var/tmp
+RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make install-unit-tests
+
+# This just does syntax checking
+FROM build as validate
+RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make validate
 
 # The final image that derives from the original base and adds the release binaries
 FROM base

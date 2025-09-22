@@ -18,30 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install deps
-        run: ./ci/installdeps.sh
-      - name: Mark git checkout as safe
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # xref containers/containers-image-proxy-rs
-      - name: Cache Dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: "tests"
-      - name: make validate-rust
-        # the ruff checks are covered via a dedicated action
-        run: make validate-rust
-      - name: Run tests
-        run: cargo test -- --nocapture --quiet
-      - name: Manpage generation
-        run: cargo xtask update-generated
-      - name: Clippy (gate on correctness and suspicous)
-        run: make validate-rust
-  fedora-container-tests:
+  # Wrapper for validation
+  validate:
     runs-on: ubuntu-24.04
     steps:
       - name: Get a newer podman for heredoc support (from debian testing)
@@ -49,14 +27,12 @@ jobs:
           set -eux
           echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
           sudo apt update
-          sudo apt install -y crun/testing podman/testing skopeo/testing
-      - name: Installdeps
-        run: sudo apt update && sudo apt install just
+          sudo apt install -y crun/testing podman/testing skopeo/testing just
       - uses: actions/checkout@v4
-      - name: Build and run container integration tests
-        run: |
-          sudo just build
-          sudo just run-container-integration run-container-external-tests
+      - name: Free up disk space on runner
+        run: sudo ./ci/clean-gha-runner.sh
+      - name: Validate (default)
+        run: just validate
   container-continuous:
     runs-on: ubuntu-24.04
     steps:
@@ -65,10 +41,12 @@ jobs:
           set -eux
           echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
           sudo apt update
-          sudo apt install -y crun/testing podman/testing skopeo/testing
+          sudo apt install -y crun/testing podman/testing skopeo/testing just
       - name: Installdeps
         run: sudo apt update && sudo apt install just
       - uses: actions/checkout@v4
+      - name: Free up disk space on runner
+        run: sudo ./ci/clean-gha-runner.sh
       - name: Build with continuous repo enabled
         run: sudo just build --build-arg=continuous_repo=1
   cargo-deny:
@@ -89,7 +67,7 @@ jobs:
           set -eux
           echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
           sudo apt update
-          sudo apt install -y crun/testing podman/testing skopeo/testing
+          sudo apt install -y crun/testing podman/testing skopeo/testing just
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Free up disk space on runner

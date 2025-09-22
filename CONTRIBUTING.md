@@ -34,47 +34,68 @@ accepted!
 - A development environment (toolbox or a host) with a Rust and C compiler, etc.
   While this isn't specific to bootc, you will find the experience of working on Rust
   is greatly aided with use of e.g. [rust-analyzer](https://github.com/rust-lang/rust-analyzer/).
-- An installation of [podman-bootc](https://github.com/containers/podman-bootc-cli)
-  which note on Linux requires that you set up "podman machine". This document
-  assumes you have the environment variable `CONTAINER_CONNECTION` set to your
-  podman machine's name.
+- Install [bcvk](https://github.com/bootc-dev/bcvk).
 
 ## Ensure you're familiar with a bootc system
 
 Worth stating: before you start diving into the code you should understand using
 the system as a user and how it works.  See the user documentation for that.
 
-## Creating your edit-compile-debug cycle
+## Understanding the Justfile
 
 Edit the source code; a simple thing to do is add e.g.
-`eprintln!("hello world);` into `run_from_opt` in [lib/src/cli.rs](lib/src/cli.rs).
+`eprintln!("hello world");` into `run_from_opt` in [crates/lib/src/cli.rs](cli.rs).
 You can run `make` or `cargo build` to build that locally.  However, a key
 next step is to get that binary into a bootc container image.
 
-Use e.g. `podman build -t localhost/bootc -f hack/Containerfile .`.
+Running `just` defaults to `just build` which will build a container
+from the current source code; the result will be named `localhost/bootc`.
 
-From there, you can create and spawn a VM from that container image
-with your modified bootc code in exactly the same way as a systems operator
-would test their own bootc images:
+### Running an interactive shell in an environment from the container
 
-```
-$ podman-bootc run localhost/bootc
-```
+You can of course `podman run --rm -ti localhost/bootc bash` to get a shell,
+and try running `bootc`.
+
+### Running container-oriented integration tests
+
+`just test-container`
+
+### Running (TMT) integration tests
+
+A common cycle here is you'll edit e.g. `deploy.rs` and want to run the
+tests that perform an upgrade:
+
+`just test-tmt-one test-20-local-upgrade`
 
 ### Faster iteration cycles
 
-You don't need to create a whole new VM for each change, of course.
-<https://github.com/containers/podman-bootc/pull/36> is an outstanding
-PR to add virtiofsd support, which would allow easily accessing the locally-built
-binaries.  Another avenue we'll likely investigate is supporting podman-bootc
-accessing the container images which currently live in the podman-machine VM,
-or having a local registry which frontends the built container images.
+The test cycle currently builds a disk image and creates a new ephemeral
+VM for each test run.
 
-A simple hack though (assuming your development environment is compatible
-with the target container host) is to just run a webserver on the host, e.g.
-`python3 -m http.server` or whatever, and then from the podman-bootc guest
-run `bootc usroverlay` once, and 
-`curl -L -o /usr/bin/bootc http://10.0.1.2:8080/target/release/bootc && restorecon /usr/bin/bootc`.
+You can shortcut some iteration cycles by having a more persistent
+environment where you run bootc.
+
+#### Upgrading from the container image
+
+One good approach is to create a persistent target virtual machine via e.g.
+`bcvk libvirt run` (or a cloud VM), and then after doing a `just build` and getting
+a container image, you can directly upgrade to that image.
+
+For the local case, check out [cstor-dist](https://github.com/cgwalters/cstor-dist).
+Another alternative is mounting via virtiofs (see e.g. [this PR to bcvk](https://github.com/bootc-dev/bcvk/pull/16)).
+If you're using libvirt, see [this document](https://libvirt.org/kbase/virtiofs.html).
+
+#### Running bootc against a live environment
+
+If your development environment host is also a bootc system (e.g. a
+workstation or a virtual server) one way to shortcut some cycles is just
+to directly run the output of the built binary against your host.
+
+Say for example your host is a Fedora 42 workstation (based on bootc),
+then you can `cargo b --release` directly in a Fedora 42 container
+or even on your host system, and then directly run e.g. `./target/release/bootc upgrade`
+etc.
+
 
 ### Debugging via lldb
 

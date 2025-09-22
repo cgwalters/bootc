@@ -8,8 +8,12 @@
 # operate as part of "a build" that results in a bootc binary
 # plus data files. The two key operations are `make`
 # and `make install`.
-# We expect code run from here is inside a container with low
+# We expect code run from here is (or can be) inside a container with low
 # privileges - running as a nonzero UID even.
+#
+# Understanding Makefile vs xtask.rs: Basically use xtask.rs if what
+# you're doing would turn into a mess of bash code, whether inline here
+# or externally in e.g. ./ci/somebashmess.sh etc.
 
 prefix ?= /usr
 
@@ -89,6 +93,16 @@ install-all: install install-ostree-hooks
 bin-archive: all
 	$(MAKE) install DESTDIR=tmp-install && $(TAR_REPRODUCIBLE) --zstd -C tmp-install -cf target/bootc.tar.zst . && rm tmp-install -rf
 
+build-unit-tests:
+	cargo t --no-run
+
+# We separate the build of the unit tests from actually running them in some cases
+install-unit-tests: build-unit-tests
+	cargo t --no-run --frozen
+	install -D -m 0755 -t $(DESTDIR)/usr/lib/bootc/units/ $$(cargo t --no-run --message-format=json | jq -r 'select(.profile.test == true and .executable != null) | .executable')
+	install -d -m 0755 /usr/bin/
+	echo -e '#!/bin/bash\nset -xeuo pipefail\nfor f in /usr/lib/bootc/units/*; do echo $$f && $$f; done' > $(DESTDIR)/usr/bin/bootc-units && chmod a+x $(DESTDIR)/usr/bin/bootc-units
+
 test-bin-archive: all
 	$(MAKE) install-all DESTDIR=tmp-install && $(TAR_REPRODUCIBLE) --zstd -C tmp-install -cf target/bootc.tar.zst . && rm tmp-install -rf
 
@@ -98,7 +112,7 @@ test-bin-archive: all
 # We intentionally don't gate on this for local builds in cargo.toml
 # because it impedes iteration speed.
 CLIPPY_CONFIG = -A clippy::all -D clippy::correctness -D clippy::suspicious -D clippy::disallowed-methods -Dunused_imports -Ddead_code
-validate-rust:
+validate:
 	cargo fmt -- --check -l
 	cargo test --no-run
 	(cd crates/ostree-ext && cargo check --no-default-features)
@@ -106,14 +120,10 @@ validate-rust:
 	cargo check --features=composefs-backend
 	cargo clippy -- $(CLIPPY_CONFIG)
 	env RUSTDOCFLAGS='-D warnings' cargo doc --lib
-.PHONY: validate-rust
+.PHONY: validate
 fix-rust:
 	cargo clippy --fix --allow-dirty -- $(CLIPPY_CONFIG)
 .PHONY: fix-rust
-
-validate: validate-rust
-	ruff check
-.PHONY: validate
 
 update-generated:
 	cargo xtask update-generated

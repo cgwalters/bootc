@@ -1,5 +1,8 @@
 //! See https://github.com/matklad/cargo-xtask
-//! This is kind of like "Justfile but in Rust".
+//! This project now has a Justfile and a Makefile.
+//! Commands here are not always intended to be run directly
+//! by the user - add commands here which otherwise might
+//! end up as a lot of nontrivial bash code.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};

@@ -1,8 +1,11 @@
 # The default entrypoint to working on this project.
 # Commands here typically wrap e.g. `podman build` or
-# other tools which might launch e.g. VMs.
+# other tools like `bcvk` which might launch local virtual machines.
 # 
-# See also `Makefile`.
+# See also `Makefile` and `xtask.rs`. Commands which end in `-local`
+# skip containerization or virtualization.
+
+# --------------------------------------------------------------------
 
 # Build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
@@ -20,16 +23,47 @@ build-integration-test-image *ARGS:
 build-install-test-image: build-integration-test-image
     cd hack && podman build -t localhost/bootc-integration-install -f Containerfile.drop-lbis
 
-# Run container integration tests
-run-container-integration: build-integration-test-image
-    podman run --rm localhost/bootc-integration bootc-integration-tests container
-
-# These tests may spawn their own container images.
+# These tests accept the container image as input, and may spawn it.
 run-container-external-tests:
    ./tests/container/run localhost/bootc
 
-unittest *ARGS:
-    podman build --jobs=4 --target units -t localhost/bootc-units --build-arg=unitargs={{ARGS}} .
+# We build the unit tests into a container image
+build-units:
+    podman build --jobs=4 --target units -t localhost/bootc-units .
+
+# Perform validation (build, linting) in a container build environment
+validate:
+    podman build --jobs=4 --target validate .
+
+# Directly run validation (build, linting) using host tools
+validate-local:
+    make validate
+
+# This generates a disk image (using bcvk) from the default container
+build-disk *ARGS:
+    ./tests/build.sh {{ARGS}}
+
+# The tests which run a fully booted bootc system (i.e. where in place
+# updates are supported) as if it were a production environment use
+# https://github.com/teemtee/tmt.
+#
+# This task runs *all* of the tmt-based tests targeting the disk image generated
+# in the previous step.
+test-tmt *ARGS: build-disk
+    ./tests/run-tmt.sh {{ARGS}}
+
+# Like test-tmt but assumes that a disk image is already built
+test-tmt-nobuild *ARGS:
+    ./tests/run-tmt.sh {{ARGS}}
+
+# Run just one tmt test: `just test-tmt-one test-20-local-upgrade`
+test-tmt-one PLAN: build-disk
+    ./tests/run-tmt.sh plan --name {{PLAN}}
+
+# Run tests (unit and integration) that are containerized
+test-container: build-units build-integration-test-image
+    podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
+    podman run --rm localhost/bootc-integration bootc-integration-tests container
 
 # Update all generated files (man pages and JSON schemas)
 #
