@@ -418,12 +418,11 @@ fn collect_xattrs(etc_fd: &CapStdDir, rel_path: impl AsRef<Path>) -> anyhow::Res
 }
 
 #[context("Copying xattrs")]
-fn copy_xattrs(xattrs: &Xattrs, new_etc_fd: &CapStdDir, file: &PathBuf) -> anyhow::Result<()> {
+fn copy_xattrs(xattrs: &Xattrs, new_etc_fd: &CapStdDir, path: &Path) -> anyhow::Result<()> {
     for (attr, value) in xattrs.borrow().iter() {
-        let path = Path::new(&format!("/proc/self/fd/{}", new_etc_fd.as_raw_fd())).join(file);
-
-        lsetxattr(path, attr.as_ref(), value, XattrFlags::empty())
-            .context(format!("setxattr for {file:?}"))?;
+        let fdpath = &Path::new(&format!("/proc/self/fd/{}", new_etc_fd.as_raw_fd())).join(path);
+        lsetxattr(fdpath, attr.as_ref(), value, XattrFlags::empty())
+            .with_context(|| format!("setxattr {attr:?} for {fdpath:?}"))?;
     }
 
     Ok(())
