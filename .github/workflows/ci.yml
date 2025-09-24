@@ -1,3 +1,10 @@
+# CI Workflow for bootc
+#
+# Core principles:
+# - Everything done here should be easy to replicate locally. Most tasks
+#   should invoke `just <something>`.
+# - Most additions to this should be extending existing tasks; e.g.
+#   there's places for unit and integration tests already.
 name: CI
 
 permissions:
@@ -18,60 +25,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Wrapper for validation
+  # Run basic validation checks (linting, formatting, etc)
   validate:
     runs-on: ubuntu-24.04
     steps:
-      - name: Get a newer podman for heredoc support (from debian testing)
-        run: |
-          set -eux
-          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
-          sudo apt update
-          sudo apt install -y crun/testing podman/testing skopeo/testing just
       - uses: actions/checkout@v4
-      - name: Free up disk space on runner
-        run: sudo ./ci/clean-gha-runner.sh
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
       - name: Validate (default)
         run: just validate
+  # Build container with continuous repository enabled
   container-continuous:
     runs-on: ubuntu-24.04
     steps:
-      - name: Get a newer podman for heredoc support (from debian testing)
-        run: |
-          set -eux
-          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
-          sudo apt update
-          sudo apt install -y crun/testing podman/testing skopeo/testing just
-      - name: Installdeps
-        run: sudo apt update && sudo apt install just
       - uses: actions/checkout@v4
-      - name: Free up disk space on runner
-        run: sudo ./ci/clean-gha-runner.sh
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
       - name: Build with continuous repo enabled
         run: sudo just build --build-arg=continuous_repo=1
+  # Check for security vulnerabilities and license compliance
   cargo-deny:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
     - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         log-level: warn
         command: check -A duplicate bans sources licenses
+  # Test bootc installation scenarios and fsverity support
+  # TODO convert to be an integration test
   install-tests:
     name: "Test install"
-    # For a not-ancient podman
     runs-on: ubuntu-24.04
     steps:
-      - name: Get a newer podman for heredoc support (from debian testing)
-        run: |
-          set -eux
-          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
-          sudo apt update
-          sudo apt install -y crun/testing podman/testing skopeo/testing just
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Free up disk space on runner
-        run: sudo ./ci/clean-gha-runner.sh
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
       - name: Enable fsverity for /
         run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
       - name: Install utils
@@ -118,9 +108,11 @@ jobs:
           sudo find /ostree/repo/objects -name '*.file' -type f | while read f; do
             sudo fsverity measure $f >/dev/null
           done
+  # Build documentation using mdBook (only for PRs with 'documentation' label)
+  # TODO move into Justfile
   docs:
     if: ${{ contains(github.event.pull_request.labels.*.name, 'documentation') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       MDBOOK_VERSION: 0.4.37
     steps:
@@ -149,3 +141,77 @@ jobs:
           echo `pwd`/mdbook-linkcheck >> $GITHUB_PATH
       - name: Build with mdBook
         run: cd docs && mdbook-mermaid install && mdbook build
+  # Build containers and disk images for integration testing across OS matrix
+  build-integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: [fedora-42, fedora-43, centos-9, centos-10]
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Install qemu-utils
+        run: sudo apt install -y qemu-utils
+
+      - name: Build container and disk image
+        run: |
+          sudo tests/build.sh ${{ matrix.test_os }}
+
+      - name: Run container tests
+        run:
+          sudo just test-container
+
+      - name: Archive disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
+          path: target/bootc-integration-test.qcow2
+          retention-days: 1
+
+  # Run TMT-based integration tests on disk images from build-integration
+  test-integration:
+    needs: build-integration
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: [fedora-42, fedora-43, centos-9, centos-10]
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          # see https://tmt.readthedocs.io/en/stable/overview.html#install
+          sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-kvm qemu-utils libvirt-daemon-system just
+          pip install --user "tmt[provision-virtual]"
+
+      - name: Create folder to save disk image
+        run: mkdir -p target
+
+      - name: Download disk.raw
+        uses: actions/download-artifact@v4
+        with:
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
+          path: target
+
+      - name: Workaround https://github.com/teemtee/testcloud/issues/18
+        run: sudo rm -f /usr/bin/chcon && sudo ln -sr /usr/bin/true /usr/bin/chcon
+
+      - name: Run all TMT tests
+        run: |
+          just test-tmt-nobuild
+
+      - name: Archive TMT logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
+          path: /var/tmp/tmt
