@@ -87,8 +87,15 @@ RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/rooth
 
 # The final image that derives from the original base and adds the release binaries
 FROM base
-# First, create a layer that is our new binaries.
+RUN <<EORUN
+set -xeuo pipefail
+# Ensure we've flushed out prior state (i.e. files no longer shipped from the old version);
+# and yes, we may need to go to building an RPM in this Dockerfile by default.
+rm -vf /usr/lib/systemd/system/multi-user.target.wants/bootc-*
+EORUN
+# Create a layer that is our new binaries
 COPY --from=build /out/ /
+# We have code in the initramfs so we always need to regenerate it
 RUN <<EORUN
 set -xeuo pipefail
 if test -x /usr/lib/bootc/initramfs-setup; then
