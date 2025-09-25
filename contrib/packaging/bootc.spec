@@ -1,5 +1,5 @@
 %bcond_without check
-%if 0%{?rhel} >= 10 || 0%{?fedora} > 41
+%if 0%{?rhel} >= 9 || 0%{?fedora} > 41
     %bcond_without ostree_ext
 %else
     %bcond_with ostree_ext
