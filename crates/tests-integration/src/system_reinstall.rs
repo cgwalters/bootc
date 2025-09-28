@@ -151,11 +151,11 @@ pub(crate) fn run(image: &str, testargs: libtest_mimic::Arguments) -> Result<()>
 
             // Run system-reinstall-bootc
             let mut p: PtySession = rexpect::spawn(
-                "/usr/bin/system-reinstall-bootc quay.io/centos-bootc/centos-bootc:stream10",
+                "/usr/bin/system-reinstall-bootc quay.io/centos-bootc/centos-bootc:stream9",
                 Some(600000), // Increase timeout for pulling the image
             )?;
 
-            p.exp_string("Image quay.io/centos-bootc/centos-bootc:stream10 is not present locally, pulling it now.")?;
+            p.exp_string("Image quay.io/centos-bootc/centos-bootc:stream9 is not present locally, pulling it now.")?;
             p.exp_regex("Found only one user ([^:]+) with ([\\d]+) SSH authorized keys.")?;
             p.exp_string("[Y/n]")?;
             p.send_line("y")?;
