@@ -51,7 +51,7 @@ use crate::install::{RootSetup, State};
 /// Contains the EFP's filesystem UUID. Used by grub
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 /// The EFI Linux directory
-const EFI_LINUX: &str = "EFI/Linux";
+pub(crate) const EFI_LINUX: &str = "EFI/Linux";
 
 /// Timeout for systemd-boot bootloader menu
 const SYSTEMD_TIMEOUT: &str = "timeout 5";
@@ -124,6 +124,26 @@ if [ -f ${{config_directory}}/{EFI_UUID_FILE} ]; then
 fi
 "#
     )
+}
+
+/// Returns `true` if detect the target rootfs carries a UKI.
+pub(crate) fn container_root_has_uki(root: &Dir) -> Result<bool> {
+    let Some(boot) = root.open_dir_optional(crate::install::BOOT)? else {
+        return Ok(false);
+    };
+    let Some(efi_linux) = boot.open_dir_optional(EFI_LINUX)? else {
+        return Ok(false);
+    };
+    for entry in efi_linux.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = Path::new(&name);
+        let extension = name.extension().and_then(|v| v.to_str());
+        if extension == Some("efi") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
@@ -1000,4 +1020,35 @@ pub(crate) fn setup_composefs_boot(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cap_std_ext::cap_std;
+
+    #[test]
+    fn test_root_has_uki() -> Result<()> {
+        // Test case 1: No boot directory
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 2: boot directory exists but no EFI/Linux
+        tempdir.create_dir(crate::install::BOOT)?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 3: boot/EFI/Linux exists but no .efi files
+        tempdir.create_dir_all("boot/EFI/Linux")?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 4: boot/EFI/Linux exists with non-.efi file
+        tempdir.atomic_write("boot/EFI/Linux/readme.txt", b"some file")?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 5: boot/EFI/Linux exists with .efi file
+        tempdir.atomic_write("boot/EFI/Linux/bootx64.efi", b"fake efi binary")?;
+        assert_eq!(container_root_has_uki(&tempdir)?, true);
+
+        Ok(())
+    }
 }
