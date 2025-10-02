@@ -5,11 +5,45 @@ use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use fn_error_context::context;
 
-use bootc_blockdev::PartitionTable;
+use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
+use bootc_mount::tempmount::TempMount;
+
+use crate::utils;
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
 pub(crate) const EFI_DIR: &str = "efi";
+/// The EFI system partition GUID
+#[allow(dead_code)]
+pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+/// Path to the bootupd update payload
+#[allow(dead_code)]
+const BOOTUPD_UPDATES: &str = "usr/lib/bootupd/updates";
+
+#[allow(dead_code)]
+pub(crate) fn esp_in(device: &PartitionTable) -> Result<&Partition> {
+    device
+        .partitions
+        .iter()
+        .find(|p| p.parttype.as_str() == ESP_GUID)
+        .ok_or(anyhow::anyhow!("ESP not found in partition table"))
+}
+
+/// Determine if the invoking environment contains bootupd, and if there are bootupd-based
+/// updates in the target root.
+#[context("Querying for bootupd")]
+#[allow(dead_code)]
+pub(crate) fn supports_bootupd(deployment_path: Option<&str>) -> Result<bool> {
+    if !utils::have_executable("bootupctl")? {
+        tracing::trace!("No bootupctl binary found");
+        return Ok(false);
+    };
+    let deployment_path = Utf8Path::new(deployment_path.unwrap_or("/"));
+    let updates = deployment_path.join(BOOTUPD_UPDATES);
+    let r = updates.try_exists()?;
+    tracing::trace!("bootupd updates: {r}");
+    Ok(r)
+}
 
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
@@ -36,6 +70,31 @@ pub(crate) fn install_via_bootupd(
         .args(bootupd_opts.iter().copied().flatten())
         .args(src_root_arg)
         .args(["--device", devpath.as_str(), rootfs.as_str()])
+        .log_debug()
+        .run_inherited_with_cmd_context()
+}
+
+#[context("Installing bootloader")]
+#[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
+pub(crate) fn install_systemd_boot(
+    device: &PartitionTable,
+    _rootfs: &Utf8Path,
+    _configopts: &crate::install::InstallConfigOpts,
+    _deployment_path: Option<&str>,
+) -> Result<()> {
+    let esp_part = device
+        .partitions
+        .iter()
+        .find(|p| p.parttype.as_str() == ESP_GUID)
+        .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
+
+    let esp_mount = TempMount::mount_dev(&esp_part.node).context("Mounting ESP")?;
+    let esp_path = Utf8Path::from_path(esp_mount.dir.path())
+        .ok_or_else(|| anyhow::anyhow!("Failed to convert ESP mount path to UTF-8"))?;
+
+    println!("Installing bootloader via systemd-boot");
+    Command::new("bootctl")
+        .args(["install", "--esp-path", esp_path.as_str()])
         .log_debug()
         .run_inherited_with_cmd_context()
 }

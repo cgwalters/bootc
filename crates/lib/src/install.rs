@@ -70,7 +70,7 @@ use bootc_mount::Filesystem;
 use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
-const BOOT: &str = "boot";
+pub(crate) const BOOT: &str = "boot";
 /// Directory for transient runtime state
 #[cfg(feature = "install-to-disk")]
 const RUN_BOOTC: &str = "/run/bootc";
@@ -87,8 +87,6 @@ const SELINUXFS: &str = "/sys/fs/selinux";
 /// The mount path for uefi
 pub(crate) const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 pub(crate) const ARCH_USES_EFI: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
-#[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
-pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
 
 #[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 // Architecture-specific DPS UUIDs for install-to-disk flow
@@ -247,15 +245,15 @@ pub(crate) struct InstallConfigOpts {
     pub(crate) stateroot: Option<String>,
 }
 
-#[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
     #[clap(long, default_value_t)]
     #[serde(default)]
     pub(crate) insecure: bool,
 
-    #[clap(long, default_value_t)]
+    #[clap(long)]
     #[serde(default)]
-    pub(crate) bootloader: Bootloader,
+    pub(crate) bootloader: Option<Bootloader>,
 
     /// Name of the UKI addons to install without the ".efi.addon" suffix.
     /// This option can be provided multiple times if multiple addons are to be installed.
@@ -438,9 +436,16 @@ pub(crate) struct State {
     pub(crate) container_root: Dir,
     pub(crate) tempdir: TempDir,
 
+    /// Set if we have determined that composefs is required
+    #[allow(dead_code)]
+    pub(crate) composefs_required: bool,
+
     // If Some, then --composefs_native is passed
     #[cfg(feature = "composefs-backend")]
     pub(crate) composefs_options: Option<InstallComposefsOpts>,
+
+    /// Detected bootloader type for the target system
+    pub(crate) detected_bootloader: crate::spec::Bootloader,
 }
 
 impl State {
@@ -793,6 +798,7 @@ async fn install_container(
     let sepolicy = sepolicy.as_ref();
     let stateroot = state.stateroot();
 
+    // TODO factor out this
     let (src_imageref, proxy_cfg) = if !state.source.in_host_mountns {
         (state.source.imageref.clone(), None)
     } else {
@@ -1221,12 +1227,20 @@ async fn verify_target_fetch(
     Ok(())
 }
 
+fn root_has_uki(root: &Dir) -> Result<bool> {
+    #[cfg(feature = "composefs-backend")]
+    return crate::bootc_composefs::boot::container_root_has_uki(root);
+
+    #[cfg(not(feature = "composefs-backend"))]
+    Ok(false)
+}
+
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
 async fn prepare_install(
     config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
-    _composefs_opts: Option<InstallComposefsOpts>,
+    composefs_options: Option<InstallComposefsOpts>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1234,7 +1248,7 @@ async fn prepare_install(
 
     let host_is_container = crate::containerenv::is_container(&rootfs);
     let external_source = source_opts.source_imgref.is_some();
-    let source = match source_opts.source_imgref {
+    let (source, target_rootfs) = match source_opts.source_imgref {
         None => {
             ensure!(host_is_container, "Either --source-imgref must be defined or this command must be executed inside a podman container.");
 
@@ -1259,11 +1273,13 @@ async fn prepare_install(
             };
             tracing::trace!("Read container engine info {:?}", container_info);
 
-            SourceInfo::from_container(&rootfs, &container_info)?
+            let source = SourceInfo::from_container(&rootfs, &container_info)?;
+            (source, Some(rootfs.try_clone()?))
         }
         Some(source) => {
             crate::cli::require_root(false)?;
-            SourceInfo::from_imageref(&source, &rootfs)?
+            let source = SourceInfo::from_imageref(&source, &rootfs)?;
+            (source, None)
         }
     };
 
@@ -1290,6 +1306,15 @@ async fn prepare_install(
         },
     };
     tracing::debug!("Target image reference: {target_imgref}");
+
+    let composefs_required = if let Some(root) = target_rootfs.as_ref() {
+        root_has_uki(root)?
+    } else {
+        false
+    };
+    tracing::debug!("Composefs required: {composefs_required}");
+    let composefs_options =
+        composefs_options.or_else(|| composefs_required.then_some(InstallComposefsOpts::default()));
 
     // We need to access devices that are set up by the host udev
     bootc_mount::ensure_mirrored_host_mount("/dev")?;
@@ -1357,6 +1382,27 @@ async fn prepare_install(
         .map(|p| std::fs::read_to_string(p).with_context(|| format!("Reading {p}")))
         .transpose()?;
 
+    // Determine bootloader type for the target system
+    // Priority: user-specified > bootupd availability > systemd-boot fallback
+    #[cfg(feature = "composefs-backend")]
+    let detected_bootloader = {
+        if let Some(bootloader) = composefs_options
+            .as_ref()
+            .and_then(|opts| opts.bootloader.clone())
+        {
+            bootloader
+        } else {
+            if crate::bootloader::supports_bootupd(None)? {
+                crate::spec::Bootloader::Grub
+            } else {
+                crate::spec::Bootloader::Systemd
+            }
+        }
+    };
+    #[cfg(not(feature = "composefs-backend"))]
+    let detected_bootloader = crate::spec::Bootloader::Grub;
+    println!("Bootloader: {detected_bootloader}");
+
     // Create our global (read-only) state which gets wrapped in an Arc
     // so we can pass it to worker threads too. Right now this just
     // combines our command line options along with some bind mounts from the host.
@@ -1371,8 +1417,10 @@ async fn prepare_install(
         container_root: rootfs,
         tempdir,
         host_is_container,
+        composefs_required,
         #[cfg(feature = "composefs-backend")]
-        composefs_options: _composefs_opts,
+        composefs_options,
+        detected_bootloader,
     });
 
     Ok(state)
@@ -1405,12 +1453,19 @@ async fn install_with_sysroot(
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
     } else {
-        crate::bootloader::install_via_bootupd(
-            &rootfs.device_info,
-            &rootfs.physical_root_path,
-            &state.config_opts,
-            Some(&deployment_path.as_str()),
-        )?;
+        match state.detected_bootloader {
+            Bootloader::Grub => {
+                crate::bootloader::install_via_bootupd(
+                    &rootfs.device_info,
+                    &rootfs.physical_root_path,
+                    &state.config_opts,
+                    Some(&deployment_path.as_str()),
+                )?;
+            }
+            Bootloader::Systemd => {
+                anyhow::bail!("bootupd is required for ostree-based installs");
+            }
+        }
     }
     tracing::debug!("Installed bootloader");
 

@@ -275,7 +275,7 @@ pub(crate) fn install_create_rootfs(
     }
 
     let esp_partno = if super::ARCH_USES_EFI {
-        let esp_guid = crate::install::ESP_GUID;
+        let esp_guid = crate::bootloader::ESP_GUID;
         partno += 1;
         writeln!(
             &mut partitioning_buf,

@@ -68,6 +68,20 @@ pub(crate) fn find_mount_option<'a>(
         .next()
 }
 
+#[allow(dead_code)]
+pub fn have_executable(name: &str) -> Result<bool> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Ok(false);
+    };
+    for mut elt in std::env::split_paths(&path) {
+        elt.push(name);
+        if elt.try_exists()? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Given a target directory, if it's a read-only mount, then remount it writable
 #[context("Opening {target} with writable mount")]
 pub(crate) fn open_dir_remount_rw(root: &Dir, target: &Utf8Path) -> Result<Dir> {
@@ -322,5 +336,11 @@ mod tests {
                 .to_string(),
             "Paths must be absolute"
         );
+    }
+
+    #[test]
+    fn test_have_executable() {
+        assert!(have_executable("true").unwrap());
+        assert!(!have_executable("someexethatdoesnotexist").unwrap());
     }
 }

@@ -91,11 +91,21 @@ RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/rooth
 
 # The final image that derives from the original base and adds the release binaries
 FROM base
+# Set this to 1 to default to systemd-boot
+ARG sdboot=0
 RUN <<EORUN
 set -xeuo pipefail
 # Ensure we've flushed out prior state (i.e. files no longer shipped from the old version);
 # and yes, we may need to go to building an RPM in this Dockerfile by default.
 rm -vf /usr/lib/systemd/system/multi-user.target.wants/bootc-*
+if test "$sdboot" = 1; then
+  dnf -y install systemd-boot-unsigned
+  # And uninstall bootupd
+  rpm -e bootupd
+  rm /usr/lib/bootupd/updates -rf
+  dnf clean all
+  rm -rf /var/cache /var/lib/{dnf,rhsm} /var/log/*
+fi
 EORUN
 # Create a layer that is our new binaries
 COPY --from=build /out/ /

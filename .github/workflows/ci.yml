@@ -192,3 +192,24 @@ jobs:
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
           path: /var/tmp/tmt
+  # This variant does composefs testing
+  test-integration-cfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: [centos-10]
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+        with:
+          libvirt: true
+
+      - name: Build container
+        run: just build-sealed
+
+      - name: Test
+        run: just test-composefs

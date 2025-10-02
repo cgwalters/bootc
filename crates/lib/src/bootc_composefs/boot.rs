@@ -29,7 +29,6 @@ use rustix::path::Arg;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
 use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
@@ -38,11 +37,15 @@ use crate::spec::ImageReference;
 use crate::task::Task;
 use crate::{bootc_composefs::repo::open_composefs_repo, store::ComposefsFilesystem};
 use crate::{
+    bootc_composefs::state::{get_booted_bls, write_composefs_state},
+    bootloader::esp_in,
+};
+use crate::{
     composefs_consts::{
         BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST,
         STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
     },
-    install::{dps_uuid::DPS_UUID, ESP_GUID, RW_KARG},
+    install::{dps_uuid::DPS_UUID, RW_KARG},
     spec::{Bootloader, Host},
 };
 
@@ -51,7 +54,7 @@ use crate::install::{RootSetup, State};
 /// Contains the EFP's filesystem UUID. Used by grub
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 /// The EFI Linux directory
-const EFI_LINUX: &str = "EFI/Linux";
+pub(crate) const EFI_LINUX: &str = "EFI/Linux";
 
 /// Timeout for systemd-boot bootloader menu
 const SYSTEMD_TIMEOUT: &str = "timeout 5";
@@ -126,15 +129,31 @@ fi
     )
 }
 
+/// Returns `true` if detect the target rootfs carries a UKI.
+pub(crate) fn container_root_has_uki(root: &Dir) -> Result<bool> {
+    let Some(boot) = root.open_dir_optional(crate::install::BOOT)? else {
+        return Ok(false);
+    };
+    let Some(efi_linux) = boot.open_dir_optional(EFI_LINUX)? else {
+        return Ok(false);
+    };
+    for entry in efi_linux.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = Path::new(&name);
+        let extension = name.extension().and_then(|v| v.to_str());
+        if extension == Some("efi") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
     let device_info = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
-    let esp = device_info
-        .partitions
-        .into_iter()
-        .find(|p| p.parttype.as_str() == ESP_GUID)
-        .ok_or(anyhow::anyhow!("ESP not found for device: {device}"))?;
+    let esp = crate::bootloader::esp_in(&device_info)?;
 
-    Ok((esp.node, esp.uuid))
+    Ok((esp.node.clone(), esp.uuid.clone()))
 }
 
 pub fn get_sysroot_parent_dev() -> Result<String> {
@@ -360,23 +379,14 @@ pub(crate) fn setup_composefs_bls_boot(
             };
 
             // Locate ESP partition device
-            let esp_part = root_setup
-                .device_info
-                .partitions
-                .iter()
-                .find(|p| p.parttype.as_str() == ESP_GUID)
-                .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
+            let esp_part = esp_in(&root_setup.device_info)?;
 
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
                 cmdline_options,
                 fs,
-                state
-                    .composefs_options
-                    .as_ref()
-                    .map(|opts| opts.bootloader.clone())
-                    .unwrap_or(Bootloader::default()),
+                state.detected_bootloader.clone(),
             )
         }
 
@@ -829,17 +839,12 @@ pub(crate) fn setup_composefs_uki_boot(
                 anyhow::bail!("ComposeFS options not found");
             };
 
-            let esp_part = root_setup
-                .device_info
-                .partitions
-                .iter()
-                .find(|p| p.parttype.as_str() == ESP_GUID)
-                .ok_or_else(|| anyhow!("ESP partition not found"))?;
+            let esp_part = esp_in(&root_setup.device_info)?;
 
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
-                cfs_opts.bootloader.clone(),
+                state.detected_bootloader.clone(),
                 cfs_opts.insecure,
                 cfs_opts.uki_addon.as_ref(),
             )
@@ -944,8 +949,15 @@ pub(crate) fn setup_composefs_boot(
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&root_setup.device_info, boot_uuid)?;
-    } else {
+    } else if state.detected_bootloader == Bootloader::Grub {
         crate::bootloader::install_via_bootupd(
+            &root_setup.device_info,
+            &root_setup.physical_root_path,
+            &state.config_opts,
+            None,
+        )?;
+    } else {
+        crate::bootloader::install_systemd_boot(
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
@@ -1000,4 +1012,35 @@ pub(crate) fn setup_composefs_boot(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cap_std_ext::cap_std;
+
+    #[test]
+    fn test_root_has_uki() -> Result<()> {
+        // Test case 1: No boot directory
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 2: boot directory exists but no EFI/Linux
+        tempdir.create_dir(crate::install::BOOT)?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 3: boot/EFI/Linux exists but no .efi files
+        tempdir.create_dir_all("boot/EFI/Linux")?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 4: boot/EFI/Linux exists with non-.efi file
+        tempdir.atomic_write("boot/EFI/Linux/readme.txt", b"some file")?;
+        assert_eq!(container_root_has_uki(&tempdir)?, false);
+
+        // Test case 5: boot/EFI/Linux exists with .efi file
+        tempdir.atomic_write("boot/EFI/Linux/bootx64.efi", b"fake efi binary")?;
+        assert_eq!(container_root_has_uki(&tempdir)?, true);
+
+        Ok(())
+    }
 }
