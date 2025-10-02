@@ -1,7 +1,7 @@
-use std::ffi::OsStr;
 use std::fs::create_dir_all;
 use std::io::Write;
 use std::path::Path;
+use std::ffi::OsStr;
 
 use anyhow::{anyhow, Context, Result};
 use bootc_blockdev::find_parent_devices;
@@ -127,6 +127,23 @@ if [ -f ${{config_directory}}/{EFI_UUID_FILE} ]; then
 fi
 "#
     )
+}
+
+/// Returns `true` if detect the target rootfs carries a UKI.
+pub(crate) fn container_root_has_uki(root: &Dir) -> Result<bool> {
+    let Some(efi_linux) = root.open_dir_optional(EFI_LINUX)? else {
+        return Ok(false);
+    };
+    for entry in efi_linux.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = Path::new(&name);
+        let extension = name.extension().and_then(|v| v.to_str());
+        if extension == Some("efi") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
