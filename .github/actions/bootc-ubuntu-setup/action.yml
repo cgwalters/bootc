@@ -1,5 +1,10 @@
 name: 'Bootc Ubuntu Setup'
 description: 'Default host setup'
+inputs:
+  libvirt:
+    description: 'Install libvirt and virtualization stack'
+    required: false
+    default: 'false'
 runs:
   using: 'composite'
   steps:
@@ -55,3 +60,10 @@ runs:
         # Suppress actually using the cache for builds running from
         # git main so that we avoid incremental compilation bugs
         lookup-only: ${{ github.ref == 'refs/heads/main' }}
+    # Install libvirt stack if requested
+    - name: Install libvirt and virtualization stack
+      if: ${{ inputs.libvirt == 'true' }}
+      shell: bash
+      run: |
+        set -eux
+        sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm qemu-utils libvirt-daemon-system
