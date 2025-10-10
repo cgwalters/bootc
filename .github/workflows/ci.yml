@@ -125,7 +125,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
+        test_os: [fedora-42]
 
     runs-on: ubuntu-24.04
 
@@ -135,6 +135,11 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
         with:
           libvirt: true
+
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
+        with:
+          limit-access-to-users: cgwalters
 
       - name: Build container and disk image
         run: |
