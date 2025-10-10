@@ -33,4 +33,6 @@ just build-integration-test-image
 # Host builds will have this already, but we use it as a general dumping space
 # for output artifacts
 mkdir -p target
+# Debugging for https://github.com/bootc-dev/bcvk/issues/65
+echo ulimit=$(ulimit -Hn)
 just build-disk-image localhost/bootc-integration target/bootc-integration-test.qcow2
