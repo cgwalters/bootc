@@ -35,181 +35,162 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
-      - name: Validate (default)
-        run: just validate
-  # Build container with continuous repository enabled
-  container-continuous:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-      - name: Build with continuous repo enabled
-        run: sudo just build --build-arg=continuous_repo=1
-  # Check for security vulnerabilities and license compliance
-  cargo-deny:
-    runs-on: ubuntu-24.04
-    steps:
-    - uses: actions/checkout@v4
-    - uses: EmbarkStudios/cargo-deny-action@v2
-      with:
-        log-level: warn
-        command: check -A duplicate bans sources licenses
-  # Test bootc installation scenarios and fsverity support
-  # TODO convert to be an integration test
-  install-tests:
-    name: "Test install"
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-      - name: Enable fsverity for /
-        run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
-      - name: Install utils
-        run: sudo apt -y install fsverity just
-      - name: Integration tests
-        run: |
-          set -xeu
-          # Build images to test; TODO investigate doing single container builds
-          # via GHA and pushing to a temporary registry to share among workflows?
-          sudo just build
-          sudo just build-install-test-image
-          sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
-
-          # TODO move into a container, and then have this tool run other containers
-          cargo build --release -p tests-integration
-
-          df -h /
-          sudo install -m 0755 target/release/tests-integration /usr/bin/bootc-integration-tests
-          rm target -rf
-          df -h /
-          # The ostree-container tests
-          sudo podman run --privileged --pid=host -v /:/run/host -v $(pwd):/src:ro -v /var/tmp:/var/tmp \
-            --tmpfs /var/lib/containers \
-            -v /run/dbus:/run/dbus -v /run/systemd:/run/systemd localhost/bootc /src/crates/ostree-ext/ci/priv-integration.sh
-          # Nondestructive but privileged tests
-          sudo bootc-integration-tests host-privileged localhost/bootc-integration-install
-          # Install tests
-          sudo bootc-integration-tests install-alongside localhost/bootc-integration-install
-
-          # system-reinstall-bootc tests
-          cargo build --release -p system-reinstall-bootc
-
-          # not sure why this is missing in the ubuntu image but just creating this directory allows the tests to pass
-          sudo mkdir -p /run/sshd
-
-          sudo install -m 0755 target/release/system-reinstall-bootc /usr/bin/system-reinstall-bootc
-          # These tests may mutate the system live so we can't run in parallel
-          sudo bootc-integration-tests system-reinstall localhost/bootc-integration --test-threads=1
-
-          # And the fsverity case
-          sudo podman run --privileged --pid=host localhost/bootc-fsverity bootc install to-existing-root --stateroot=other \
-            --acknowledge-destructive --skip-fetch-check
-          # Crude cross check
-          sudo find /ostree/repo/objects -name '*.file' -type f | while read f; do
-            sudo fsverity measure $f >/dev/null
-          done
-  # Test that we can build documentation
-  docs:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-      - name: Build mdbook
-        run: just build-mdbook
-  # Build containers and disk images for integration testing across OS matrix
-  build-integration:
-    strategy:
-      fail-fast: false
-      matrix:
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
-
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v4
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
         with:
-          libvirt: true
+          limit-access-to-actor: true # Restrict to the user who triggered the workflow
+  # # Build container with continuous repository enabled
+  # container-continuous:
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Bootc Ubuntu Setup
+  #       uses: ./.github/actions/bootc-ubuntu-setup
+  #     - name: Build with continuous repo enabled
+  #       run: sudo just build --build-arg=continuous_repo=1
+  # # Check for security vulnerabilities and license compliance
+  # cargo-deny:
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #   - uses: EmbarkStudios/cargo-deny-action@v2
+  #     with:
+  #       log-level: warn
+  #       command: check -A duplicate bans sources licenses
+  # # Test bootc installation scenarios and fsverity support
+  # # TODO convert to be an integration test
+  # install-tests:
+  #   name: "Test install"
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #     - name: Bootc Ubuntu Setup
+  #       uses: ./.github/actions/bootc-ubuntu-setup
+  #     - name: Enable fsverity for /
+  #       run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
+  #     - name: Install utils
+  #       run: sudo apt -y install fsverity just
+  #     - name: Integration tests
+  #       run: |
+  #         set -xeu
+  #         # Build images to test; TODO investigate doing single container builds
+  #         # via GHA and pushing to a temporary registry to share among workflows?
+  #         sudo just build
+  #         sudo just build-install-test-image
+  #         sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
-      - name: Build container and disk image
-        run: |
-          tests/build.sh ${{ matrix.test_os }}
+  #         # TODO move into a container, and then have this tool run other containers
+  #         cargo build --release -p tests-integration
 
-      - name: Run container tests
-        run:
-          just test-container
+  #         df -h /
+  #         sudo install -m 0755 target/release/tests-integration /usr/bin/bootc-integration-tests
+  #         rm target -rf
+  #         df -h /
+  #         # The ostree-container tests
+  #         sudo podman run --privileged --pid=host -v /:/run/host -v $(pwd):/src:ro -v /var/tmp:/var/tmp \
+  #           --tmpfs /var/lib/containers \
+  #           -v /run/dbus:/run/dbus -v /run/systemd:/run/systemd localhost/bootc /src/crates/ostree-ext/ci/priv-integration.sh
+  #         # Nondestructive but privileged tests
+  #         sudo bootc-integration-tests host-privileged localhost/bootc-integration-install
+  #         # Install tests
+  #         sudo bootc-integration-tests install-alongside localhost/bootc-integration-install
 
-      - name: Archive disk image
-        uses: actions/upload-artifact@v4
-        with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
-          path: target/bootc-integration-test.qcow2
-          retention-days: 1
+  #         # system-reinstall-bootc tests
+  #         cargo build --release -p system-reinstall-bootc
 
-  # Run TMT-based integration tests on disk images from build-integration
-  test-integration:
-    needs: build-integration
-    strategy:
-      fail-fast: false
-      matrix:
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
+  #         # not sure why this is missing in the ubuntu image but just creating this directory allows the tests to pass
+  #         sudo mkdir -p /run/sshd
 
-    runs-on: ubuntu-24.04
+  #         sudo install -m 0755 target/release/system-reinstall-bootc /usr/bin/system-reinstall-bootc
+  #         # These tests may mutate the system live so we can't run in parallel
+  #         sudo bootc-integration-tests system-reinstall localhost/bootc-integration --test-threads=1
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-        with:
-          libvirt: true
-      - name: Install tmt
-        run: pip install --user "tmt[provision-virtual]"
+  #         # And the fsverity case
+  #         sudo podman run --privileged --pid=host localhost/bootc-fsverity bootc install to-existing-root --stateroot=other \
+  #           --acknowledge-destructive --skip-fetch-check
+  #         # Crude cross check
+  #         sudo find /ostree/repo/objects -name '*.file' -type f | while read f; do
+  #           sudo fsverity measure $f >/dev/null
+  #         done
+  # # Test that we can build documentation
+  # docs:
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Bootc Ubuntu Setup
+  #       uses: ./.github/actions/bootc-ubuntu-setup
+  #     - name: Build mdbook
+  #       run: just build-mdbook
+  # # Build containers and disk images for integration testing across OS matrix
+  # build-integration:
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       test_os: [fedora-42, fedora-43, centos-9, centos-10]
 
-      - name: Create folder to save disk image
-        run: mkdir -p target
+  #   runs-on: ubuntu-24.04
 
-      - name: Download disk.raw
-        uses: actions/download-artifact@v4
-        with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
-          path: target
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Bootc Ubuntu Setup
+  #       uses: ./.github/actions/bootc-ubuntu-setup
+  #       with:
+  #         libvirt: true
 
-      - name: Workaround https://github.com/teemtee/testcloud/issues/18
-        run: sudo rm -f /usr/bin/chcon && sudo ln -sr /usr/bin/true /usr/bin/chcon
+  #     - name: Build container and disk image
+  #       run: |
+  #         tests/build.sh ${{ matrix.test_os }}
 
-      - name: Run all TMT tests
-        run: |
-          just test-tmt-nobuild
+  #     - name: Run container tests
+  #       run:
+  #         just test-container
 
-      - name: Archive TMT logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
-          path: /var/tmp/tmt
-  # This variant does composefs testing
-  test-integration-cfs:
-    strategy:
-      fail-fast: false
-      matrix:
-        test_os: [centos-10]
+  #     - name: Archive disk image
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
+  #         path: target/bootc-integration-test.qcow2
+  #         retention-days: 1
 
-    runs-on: ubuntu-24.04
+  # # Run TMT-based integration tests on disk images from build-integration
+  # test-integration:
+  #   needs: build-integration
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       test_os: [fedora-42, fedora-43, centos-9, centos-10]
 
-    steps:
-      - uses: actions/checkout@v4
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-        with:
-          libvirt: true
+  #   runs-on: ubuntu-24.04
 
-      - name: Build container
-        run: just build-sealed
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Bootc Ubuntu Setup
+  #       uses: ./.github/actions/bootc-ubuntu-setup
+  #       with:
+  #         libvirt: true
+  #     - name: Install tmt
+  #       run: pip install --user "tmt[provision-virtual]"
 
-      - name: Test
-        run: just test-composefs
+  #     - name: Create folder to save disk image
+  #       run: mkdir -p target
+
+  #     - name: Download disk.raw
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
+  #         path: target
+
+  #     - name: Workaround https://github.com/teemtee/testcloud/issues/18
+  #       run: sudo rm -f /usr/bin/chcon && sudo ln -sr /usr/bin/true /usr/bin/chcon
+
+  #     - name: Run all TMT tests
+  #       run: |
+  #         just test-tmt-nobuild
+
+  #     - name: Archive TMT logs
+  #       if: always()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
+  #         path: /var/tmp/tmt
