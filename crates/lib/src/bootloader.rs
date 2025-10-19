@@ -9,8 +9,7 @@ use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
 #[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
-use bootc_mount::tempmount::TempMount;
-
+use crate::bootc_composefs::boot::mount_esp;
 use crate::utils;
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -90,7 +89,7 @@ pub(crate) fn install_systemd_boot(
         .find(|p| p.parttype.as_str() == ESP_GUID)
         .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
 
-    let esp_mount = TempMount::mount_dev(&esp_part.node).context("Mounting ESP")?;
+    let esp_mount = mount_esp(&esp_part.node).context("Mounting ESP")?;
     let esp_path = Utf8Path::from_path(esp_mount.dir.path())
         .ok_or_else(|| anyhow::anyhow!("Failed to convert ESP mount path to UTF-8"))?;
 

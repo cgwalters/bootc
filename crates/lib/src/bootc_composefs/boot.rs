@@ -25,7 +25,7 @@ use ostree_ext::composefs_boot::{
     os_release::OsReleaseInfo, uki,
 };
 use ostree_ext::composefs_oci::image::create_filesystem as create_composefs_filesystem;
-use rustix::path::Arg;
+use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -153,6 +153,12 @@ pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
     let esp = crate::bootloader::esp_in(&device_info)?;
 
     Ok((esp.node.clone(), esp.uuid.clone()))
+}
+
+/// Mount the ESP from the provided device
+pub fn mount_esp(device: &str) -> Result<TempMount> {
+    let flags = MountFlags::NOEXEC | MountFlags::NOSUID;
+    TempMount::mount_dev(device, "vfat", flags, Some(c"fmask=0177,dmask=0077"))
 }
 
 pub fn get_sysroot_parent_dev() -> Result<String> {
@@ -418,7 +424,7 @@ pub(crate) fn setup_composefs_bls_boot(
         ),
 
         Bootloader::Systemd => {
-            let efi_mount = TempMount::mount_dev(&esp_device).context("Mounting ESP")?;
+            let efi_mount = mount_esp(&esp_device).context("Mounting ESP")?;
 
             let mounted_efi = Utf8PathBuf::from(efi_mount.dir.path().as_str()?);
             let efi_linux_dir = mounted_efi.join(EFI_LINUX);
@@ -857,7 +863,7 @@ pub(crate) fn setup_composefs_uki_boot(
         }
     };
 
-    let esp_mount = TempMount::mount_dev(&esp_device).context("Mounting ESP")?;
+    let esp_mount = mount_esp(&esp_device).context("Mounting ESP")?;
 
     let mut boot_label = String::new();
 

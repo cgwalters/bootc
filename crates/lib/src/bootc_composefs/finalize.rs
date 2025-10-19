@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use crate::bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, BootType};
+use crate::bootc_composefs::boot::{
+    get_esp_partition, get_sysroot_parent_dev, mount_esp, BootType,
+};
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::spec::Bootloader;
 use crate::{
@@ -85,7 +87,7 @@ pub(crate) async fn composefs_backend_finalize() -> Result<()> {
     // NOTE: Assumption here that ESP will always be present
     let (esp_part, ..) = get_esp_partition(&sysroot_parent)?;
 
-    let esp_mount = TempMount::mount_dev(&esp_part)?;
+    let esp_mount = mount_esp(&esp_part)?;
     let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
         .context("Opening sysroot/boot")?;
 

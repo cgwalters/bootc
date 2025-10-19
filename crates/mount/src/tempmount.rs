@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use fn_error_context::context;
-use rustix::mount::{move_mount, unmount, MoveMountFlags, UnmountFlags};
+use rustix::mount::{move_mount, unmount, MountFlags, MoveMountFlags, UnmountFlags};
 
 pub struct TempMount {
     pub dir: tempfile::TempDir,
@@ -15,13 +15,18 @@ pub struct TempMount {
 impl TempMount {
     /// Mount device/partition on a tempdir which will be automatically unmounted on drop
     #[context("Mounting {dev}")]
-    pub fn mount_dev(dev: &str) -> Result<Self> {
+    pub fn mount_dev(
+        dev: &str,
+        fstype: &str,
+        flags: MountFlags,
+        data: Option<&std::ffi::CStr>,
+    ) -> Result<Self> {
         let tempdir = tempfile::TempDir::new()?;
 
         let utf8path = Utf8Path::from_path(tempdir.path())
             .ok_or(anyhow::anyhow!("Failed to convert path to UTF-8 Path"))?;
 
-        crate::mount(dev, utf8path)?;
+        rustix::mount::mount(dev, utf8path.as_std_path(), fstype, flags, data)?;
 
         let fd = Dir::open_ambient_dir(tempdir.path(), ambient_authority())
             .with_context(|| format!("Opening {:?}", tempdir.path()));

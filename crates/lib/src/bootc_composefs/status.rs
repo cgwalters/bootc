@@ -2,11 +2,10 @@ use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
-use bootc_mount::tempmount::TempMount;
 use fn_error_context::context;
 
 use crate::{
-    bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, BootType},
+    bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp, BootType},
     composefs_consts::{COMPOSEFS_CMDLINE, TYPE1_ENT_PATH, USER_CFG},
     parsers::{
         bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
@@ -349,7 +348,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
             let parent = get_sysroot_parent_dev()?;
             let (esp_part, ..) = get_esp_partition(&parent)?;
 
-            let esp_mount = TempMount::mount_dev(&esp_part)?;
+            let esp_mount = mount_esp(&esp_part)?;
 
             let dir = esp_mount.fd.try_clone().context("Cloning fd")?;
             let guard = Some(esp_mount);
