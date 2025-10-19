@@ -1,9 +1,11 @@
 //! Module containing access to global state.
 
 use super::Result;
+use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::RootDir;
+use fn_error_context::context;
 use ostree::glib;
 use std::fs::File;
 use std::sync::OnceLock;
@@ -61,17 +63,26 @@ impl ConfigPaths {
         let p = p.as_ref();
         let mut runtime = self.runtime.clone();
         runtime.push(p);
-        if let Some(f) = root.open_optional(&runtime)? {
+        if let Some(f) = root
+            .open_optional(&runtime)
+            .context("Opening runtime auth file")?
+        {
             return Ok(Some((runtime, f)));
         }
         let mut persistent = self.persistent.clone();
         persistent.push(p);
-        if let Some(f) = root.open_optional(&persistent)? {
+        if let Some(f) = root
+            .open_optional(&persistent)
+            .context("Opening persistent auth file")?
+        {
             return Ok(Some((persistent, f)));
         }
         if let Some(mut system) = self.system.clone() {
             system.push(p);
-            if let Some(f) = root.open_optional(&system)? {
+            if let Some(f) = root
+                .open_optional(&system)
+                .context("Opening system auth file")?
+            {
                 return Ok(Some((system, f)));
             }
         }
@@ -80,8 +91,9 @@ impl ConfigPaths {
 }
 
 /// Return the path to the global container authentication file, if it exists.
+#[context("Loading global authfile")]
 pub fn get_global_authfile(root: &Dir) -> Result<Option<(Utf8PathBuf, File)>> {
-    let root = &RootDir::new(root, ".")?;
+    let root = &RootDir::new(root, ".").context("Opening RootDir")?;
     let am_uid0 = rustix::process::getuid() == rustix::process::Uid::ROOT;
     get_global_authfile_impl(root, am_uid0)
 }
