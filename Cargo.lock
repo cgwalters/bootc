@@ -265,6 +265,7 @@ dependencies = [
  "camino",
  "canon-json",
  "cap-std-ext",
+ "cfg-if",
  "chrono",
  "clap",
  "clap_mangen",

@@ -36,6 +36,7 @@ anyhow = "1.0.82"
 camino = "1.1.6"
 canon-json = "0.2.1"
 cap-std-ext = "4.0.3"
+cfg-if = "1.0"
 chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"
 clap_mangen = { version = "0.2.20" }

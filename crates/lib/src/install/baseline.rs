@@ -108,7 +108,7 @@ fn mkfs<'a>(
     let devinfo = bootc_blockdev::list_dev(dev.into())?;
     let size = ostree_ext::glib::format_size(devinfo.size);
 
-    let u = uuid::uuid!(crate::install::dps_uuid::DPS_UUID);
+    let u = uuid::Uuid::parse_str(crate::discoverable_partition_specification::this_arch_root())?;
 
     let mut t = Task::new(
         &format!("Creating {label} filesystem ({fs}) on device {dev} (size={size})"),
@@ -275,7 +275,7 @@ pub(crate) fn install_create_rootfs(
     }
 
     let esp_partno = if super::ARCH_USES_EFI {
-        let esp_guid = crate::bootloader::ESP_GUID;
+        let esp_guid = crate::discoverable_partition_specification::ESP;
         partno += 1;
         writeln!(
             &mut partitioning_buf,
