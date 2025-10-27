@@ -57,6 +57,7 @@
 # Experimental features
 
 - [bootc image](experimental-bootc-image.md)
+- [composefs backend](experimental-composefs.md)
 - [fsck](experimental-fsck.md)
 - [--progress-fd](experimental-progress-fd.md)
 
