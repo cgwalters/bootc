@@ -43,8 +43,8 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
     // We reuse kernel + initrd if they're the same for two deployments
     // We don't want to delete the (being deleted) deployment's kernel + initrd
     // if it's in use by any other deployment
-    let should_del_kernel = match &depl.deployment.boot_digest {
-        Some(digest) => find_vmlinuz_initrd_duplicates(&digest)?
+    let should_del_kernel = match depl.deployment.boot_digest.as_ref() {
+        Some(digest) => find_vmlinuz_initrd_duplicates(digest)?
             .is_some_and(|vec| vec.iter().any(|digest| *digest != depl.deployment.verity)),
         None => false,
     };

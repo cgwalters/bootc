@@ -33,9 +33,7 @@ use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 use tempfile::tempdir_in;
 
-#[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::delete::delete_composefs_deployment;
-#[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::{
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
@@ -669,13 +667,12 @@ pub(crate) enum Opt {
     #[clap(subcommand)]
     #[clap(hide = true)]
     Internals(InternalsOpts),
-    #[cfg(feature = "composefs-backend")]
     ComposefsFinalizeStaged,
-    #[cfg(feature = "composefs-backend")]
     /// Diff current /etc configuration versus default
     ConfigDiff,
-    #[cfg(feature = "composefs-backend")]
-    DeleteDeployment { depl_id: String },
+    DeleteDeployment {
+        depl_id: String,
+    },
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1267,37 +1264,25 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
     match opt {
         Opt::Upgrade(opts) => {
-            #[cfg(feature = "composefs-backend")]
             if composefs_booted()?.is_some() {
                 upgrade_composefs(opts).await
             } else {
                 upgrade(opts).await
             }
-
-            #[cfg(not(feature = "composefs-backend"))]
-            upgrade(opts).await
         }
         Opt::Switch(opts) => {
-            #[cfg(feature = "composefs-backend")]
             if composefs_booted()?.is_some() {
                 switch_composefs(opts).await
             } else {
                 switch(opts).await
             }
-
-            #[cfg(not(feature = "composefs-backend"))]
-            switch(opts).await
         }
         Opt::Rollback(opts) => {
-            #[cfg(feature = "composefs-backend")]
             if composefs_booted()?.is_some() {
                 composefs_rollback().await?
             } else {
                 rollback(&opts).await?
             }
-
-            #[cfg(not(feature = "composefs-backend"))]
-            rollback(&opts).await?;
 
             if opts.apply {
                 crate::reboot::reboot()?;
@@ -1307,15 +1292,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
         }
         Opt::Edit(opts) => edit(opts).await,
         Opt::UsrOverlay => {
-            #[cfg(feature = "composefs-backend")]
             if composefs_booted()?.is_some() {
                 composefs_usr_overlay()
             } else {
                 usroverlay().await
             }
-
-            #[cfg(not(feature = "composefs-backend"))]
-            usroverlay().await
         }
         Opt::Container(opts) => match opts {
             ContainerOpts::Lint {
@@ -1608,13 +1589,10 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
         },
 
-        #[cfg(feature = "composefs-backend")]
         Opt::ComposefsFinalizeStaged => composefs_backend_finalize().await,
 
-        #[cfg(feature = "composefs-backend")]
         Opt::ConfigDiff => get_etc_diff().await,
 
-        #[cfg(feature = "composefs-backend")]
         Opt::DeleteDeployment { depl_id } => delete_composefs_deployment(&depl_id).await,
     }
 }
