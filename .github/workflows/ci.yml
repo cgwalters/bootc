@@ -120,40 +120,10 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Build mdbook
         run: just build-mdbook
-  # Build containers and disk images for integration testing across OS matrix
-  build-integration:
-    strategy:
-      fail-fast: false
-      matrix:
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
-
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v5
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-        with:
-          libvirt: true
-
-      - name: Build container and disk image
-        run: |
-          tests/build.sh ${{ matrix.test_os }}
-
-      - name: Run container tests
-        run:
-          just test-container
-
-      - name: Archive disk image
-        uses: actions/upload-artifact@v5
-        with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
-          path: target/bootc-integration-test.qcow2
-          retention-days: 1
-
-  # Run TMT-based integration tests on disk images from build-integration
+  # Build bootc from source into a container image FROM each specified base `test_os`
+  # running unit and integration tests (using TMT, leveraging the support for nested virtualization
+  # in the GHA runners)
   test-integration:
-    needs: build-integration
     strategy:
       fail-fast: false
       matrix:
@@ -170,14 +140,40 @@ jobs:
       - name: Install tmt
         run: pip install --user "tmt[provision-virtual]"
 
-      - name: Create folder to save disk image
-        run: mkdir -p target
+      - name: Build container and disk image
+        run: |
+          set -xeuo pipefail
+          build_args=()
+          # Map from an ID-VERSIONID pair to a container ref
+          target=${{ matrix.test_os }}
+          OS_ID=$(echo "$target" | cut -d '-' -f 1)
+          OS_VERSION_ID=$(echo "$target" | cut -d '-' -f 2)
+          # Base image
+          case "$OS_ID" in
+              "centos")
+                  BASE="quay.io/centos-bootc/centos-bootc:stream${OS_VERSION_ID}"
+              ;;
+              "fedora")
+                  BASE="quay.io/fedora/fedora-bootc:${OS_VERSION_ID}"
+              ;;
+              *) echo "Unknown OS: ${OS_ID}" 1>&2; exit 1
+              ;;
+          esac
+          build_args+=("--build-arg=base=$BASE")
+          just build ${build_args[@]}
+          just build-integration-test-image
+          # Cross check we're using the right base
+          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo $VERSION_ID')
+          test "$OS_VERSION_ID" = "${used_vid}"
 
-      - name: Download disk.raw
-        uses: actions/download-artifact@v6
-        with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
-          path: target
+      - name: Run container tests
+        run: |
+          just test-container
+
+      - name: Generate disk image
+        run: |
+          mkdir -p target
+          just build-disk-image localhost/bootc-integration target/bootc-integration-test.qcow2
 
       - name: Workaround https://github.com/teemtee/testcloud/issues/18
         run: sudo rm -f /usr/bin/chcon && sudo ln -sr /usr/bin/true /usr/bin/chcon
