@@ -11,11 +11,10 @@ permissions:
   actions: read
 
 on:
-  # Temporarily disabled for debugging
-  # push:
-  #   branches: [main]
-  # pull_request:
-  #   branches: [main]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 env:
@@ -168,8 +167,12 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
         with:
           libvirt: true
-      - name: Install tmt
-        run: pip install --user "tmt[provision-virtual]"
+      - name: Install tmt (patched version from cgwalters/tmt)
+        run: |
+          # Install tmt from cgwalters/tmt fork's fix-queue-debug-logging branch
+          # This includes the patch that fixes DebugLevelFilter to reject DEBUG messages
+          # without TMT's custom details attribute, eliminating 100k+ lines of debug output
+          pip install --user "git+https://github.com/cgwalters/tmt.git@fix-queue-debug-logging#egg=tmt[provision-virtual]"
 
       - name: Create folder to save disk image
         run: mkdir -p target

@@ -24,10 +24,4 @@ rm -vrf /var/tmp/tmt/testcloud/images/bootc-integration-test.qcow2
 cd target/tmt-workdir
 # TMT will rsync tmt-* scripts to TMT_SCRIPTS_DIR=/var/lib/tmt/scripts
 # running_env=image_mode means running tmt on image_mode system on Github CI or locally
-#
-# Filter out verbose DEBUG lines from TMT's internal queue logging.
-# TMT's queue/worker implementation emits DEBUG-level Python logging messages
-# that bypass TMT's normal formatting. These add 100k+ lines of noise in CI logs.
-# We filter lines matching "DEBUG:tmt.*:" while preserving TMT's formatted output
-# and actual test results.
-exec tmt --context "test_disk_image=${DISK}" --context "running_env=image_mode" run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts "$@" 2>&1 | grep -v "^DEBUG:tmt\."
+exec tmt --context "test_disk_image=${DISK}" --context "running_env=image_mode" run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts "$@"
