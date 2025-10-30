@@ -1,0 +1,115 @@
+name: Debug TMT Patch
+
+permissions:
+  actions: read
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  LIBVIRT_DEFAULT_URI: "qemu:///session"
+
+jobs:
+  test-tmt-patch:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install tmt from cgwalters/tmt fork with fix
+        run: |
+          # Install tmt from cgwalters/tmt fork's fix-queue-debug-logging branch
+          # This tests the patch that filters out DEBUG messages without TMT details
+          pip install --user "git+https://github.com/cgwalters/tmt.git@fix-queue-debug-logging#egg=tmt[provision-virtual]"
+
+      - name: Verify TMT patch is applied
+        run: |
+          echo "=== TMT version ==="
+          tmt --version
+
+          echo ""
+          echo "=== Verify we have the patched version ==="
+          python3 .github/scripts/verify-tmt-patch.py
+
+      - name: Test with minimal FMF tree - local provision
+        run: |
+          set -x
+          cd /tmp
+          mkdir -p tmt-test
+          cd tmt-test
+
+          # Create minimal FMF tree
+          mkdir -p .fmf
+          echo "1" > .fmf/version
+
+          mkdir -p tmt
+          cat > tmt/test.fmf <<'EOF'
+          summary: Minimal test
+          test: echo "hello from test"
+          EOF
+
+          echo "=== Test 1: TMT run with local provision - capture full output ==="
+          output=$(tmt run -v provision --how local 2>&1)
+          echo "$output"
+
+          echo ""
+          echo "=== Analysis: Count DEBUG lines ==="
+          debug_count=$(echo "$output" | grep -c "^DEBUG:tmt\." || true)
+          echo "DEBUG:tmt.* lines found: $debug_count"
+
+          if [ "$debug_count" -eq 0 ]; then
+              echo "✓ SUCCESS: No unwanted DEBUG lines with local provision!"
+          else
+              echo "✗ FAILURE: Found $debug_count DEBUG lines"
+              echo "Sample DEBUG lines:"
+              echo "$output" | grep "^DEBUG:tmt\." | head -20
+              exit 1
+          fi
+
+      - name: Test with provision plan (similar to real CI)
+        run: |
+          set -x
+          cd /tmp/tmt-test
+
+          # Create a plan that does provision
+          cat > tmt/plan.fmf <<'EOF'
+          summary: Test plan with provision
+          discover:
+              how: fmf
+          provision:
+              how: local
+          execute:
+              how: tmt
+          EOF
+
+          echo "=== Test 2: TMT run plan --all (full pipeline like CI) ==="
+          output=$(tmt run --all -vv 2>&1)
+          echo "$output"
+
+          echo ""
+          echo "=== Analysis: Count DEBUG lines ==="
+          debug_count=$(echo "$output" | grep -c "^DEBUG:tmt\." || true)
+          echo "DEBUG:tmt.* lines found: $debug_count"
+
+          if [ "$debug_count" -eq 0 ]; then
+              echo "✓ SUCCESS: No unwanted DEBUG lines with full plan!"
+          else
+              echo "✗ FAILURE: Found $debug_count DEBUG lines"
+              echo "Sample DEBUG lines:"
+              echo "$output" | grep "^DEBUG:tmt\." | head -20
+              exit 1
+          fi
+
+      - name: Check local TMT version comparison
+        run: |
+          echo "=== For comparison with local runs ==="
+          echo "CI is using TMT from: git+https://github.com/cgwalters/tmt.git@fix-queue-debug-logging"
+          echo "To test locally with same version:"
+          echo "  pip install --user 'git+https://github.com/cgwalters/tmt.git@fix-queue-debug-logging#egg=tmt[provision-virtual]'"
+          echo ""
+          echo "To check your local TMT version:"
+          echo "  tmt --version"
+          echo "  pip show tmt"
