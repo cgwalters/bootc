@@ -811,7 +811,7 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
 
     sysroot.load(cancellable)?;
     let sysroot = SysrootLock::new_from_sysroot(&sysroot).await?;
-    let storage = Storage::new(sysroot, &temp_run)?;
+    let storage = Storage::new_ostree(sysroot, &temp_run)?;
 
     Ok((storage, has_ostree))
 }

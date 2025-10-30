@@ -247,14 +247,23 @@ async fn boot_entry_from_composefs_deployment(
     Ok(e)
 }
 
-#[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     let composefs_state = composefs_booted()?
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
-    let composefs_digest = &composefs_state.digest;
 
     let sysroot =
         Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening sysroot")?;
+
+    composefs_deployment_status_from(&sysroot, composefs_state).await
+}
+
+#[context("Getting composefs deployment status")]
+pub(crate) async fn composefs_deployment_status_from(
+    sysroot: &Dir,
+    cmdline: &ComposefsCmdline,
+) -> Result<Host> {
+    let composefs_digest = &cmdline.digest;
+
     let deployments = sysroot
         .read_dir(STATE_DIR_RELATIVE)
         .with_context(|| format!("Reading sysroot {STATE_DIR_RELATIVE}"))?;

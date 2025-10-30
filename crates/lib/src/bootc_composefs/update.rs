@@ -14,7 +14,7 @@ use crate::{
     },
     cli::UpgradeOpts,
     spec::ImageReference,
-    store::ComposefsRepository,
+    store::{BootedComposefs, ComposefsRepository, Storage},
 };
 
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
@@ -61,7 +61,11 @@ async fn is_image_pulled(
 }
 
 #[context("Upgrading composefs")]
-pub(crate) async fn upgrade_composefs(opts: UpgradeOpts) -> Result<()> {
+pub(crate) async fn upgrade_composefs(
+    opts: UpgradeOpts,
+    _storage: &Storage,
+    _composefs: &BootedComposefs,
+) -> Result<()> {
     let host = composefs_deployment_status()
         .await
         .context("Getting composefs deployment status")?;

@@ -38,7 +38,6 @@ use crate::bootc_composefs::{
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
     state::composefs_usr_overlay,
-    status::composefs_booted,
     switch::switch_composefs,
     update::upgrade_composefs,
 };
@@ -48,7 +47,8 @@ use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
-use crate::store::ComposefsRepository;
+use crate::store::{BootedOstree, ComposefsRepository, Storage};
+use crate::store::{BootedStorage, BootedStorageKind};
 use crate::utils::sigpolicy_from_opt;
 
 /// Shared progress options
@@ -712,24 +712,11 @@ pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
     bootc_utils::reexec::reexec_with_guardenv(recurse_env, &["unshare", "-m", "--"])
 }
 
-/// Acquire a locked sysroot.
-/// TODO drain this and the above into SysrootLock
-#[context("Acquiring sysroot")]
-pub(crate) async fn get_locked_sysroot() -> Result<ostree_ext::sysroot::SysrootLock> {
-    prepare_for_write()?;
-    let sysroot = ostree::Sysroot::new_default();
-    sysroot.set_mount_namespace_in_use();
-    let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
-    sysroot.load(gio::Cancellable::NONE)?;
-    Ok(sysroot)
-}
-
 /// Load global storage state, expecting that we're booted into a bootc system.
 #[context("Initializing storage")]
-pub(crate) async fn get_storage() -> Result<crate::store::Storage> {
-    let global_run = Dir::open_ambient_dir("/run", cap_std::ambient_authority())?;
-    let sysroot = get_locked_sysroot().await?;
-    crate::store::Storage::new(sysroot, &global_run)
+pub(crate) async fn get_storage() -> Result<crate::store::BootedStorage> {
+    prepare_for_write()?;
+    BootedStorage::new().await
 }
 
 #[context("Querying root privilege")]
@@ -811,7 +798,7 @@ where
 /// Handle soft reboot for staged deployments (used by upgrade and switch)
 #[context("Handling staged soft reboot")]
 fn handle_staged_soft_reboot(
-    sysroot: &SysrootLock,
+    booted_ostree: &BootedOstree<'_>,
     soft_reboot_mode: Option<SoftRebootMode>,
     host: &crate::spec::Host,
 ) -> Result<()> {
@@ -819,7 +806,7 @@ fn handle_staged_soft_reboot(
         soft_reboot_mode,
         host.status.staged.as_ref(),
         "staged",
-        || soft_reboot_staged(sysroot),
+        || soft_reboot_staged(booted_ostree.sysroot),
     )
 }
 
@@ -881,11 +868,14 @@ fn prepare_for_write() -> Result<()> {
 
 /// Implementation of the `bootc upgrade` CLI command.
 #[context("Upgrading")]
-async fn upgrade(opts: UpgradeOpts) -> Result<()> {
-    let sysroot = &get_storage().await?;
-    let ostree = sysroot.get_ostree()?;
-    let repo = &ostree.repo();
-    let (booted_deployment, _deployments, host) = crate::status::get_status_require_booted(ostree)?;
+async fn upgrade(
+    opts: UpgradeOpts,
+    storage: &Storage,
+    booted_ostree: &BootedOstree<'_>,
+) -> Result<()> {
+    let repo = &booted_ostree.repo();
+
+    let host = crate::status::get_status(booted_ostree)?.1;
     let imgref = host.spec.image.as_ref();
     let prog: ProgressWriter = opts.progress.try_into()?;
 
@@ -953,16 +943,16 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
             .unwrap_or_default();
         if staged_unchanged {
             println!("Staged update present, not changed.");
-            handle_staged_soft_reboot(ostree, opts.soft_reboot, &host)?;
+            handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
             if opts.apply {
                 crate::reboot::reboot()?;
             }
         } else if booted_unchanged {
             println!("No update available.")
         } else {
-            let stateroot = booted_deployment.osname();
-            let from = MergeState::from_stateroot(sysroot, &stateroot)?;
-            crate::deploy::stage(sysroot, from, &fetched, &spec, prog.clone()).await?;
+            let stateroot = booted_ostree.stateroot();
+            let from = MergeState::from_stateroot(storage, &stateroot)?;
+            crate::deploy::stage(storage, from, &fetched, &spec, prog.clone()).await?;
             changed = true;
             if let Some(prev) = booted_image.as_ref() {
                 if let Some(fetched_manifest) = fetched.get_manifest(repo)? {
@@ -974,13 +964,13 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
         }
     }
     if changed {
-        sysroot.update_mtime()?;
+        storage.update_mtime()?;
 
         if opts.soft_reboot.is_some() {
             // At this point we have new staged deployment and the host definition has changed.
             // We need the updated host status before we check if we can prepare the soft-reboot.
-            let updated_host = crate::status::get_status(ostree, Some(&booted_deployment))?.1;
-            handle_staged_soft_reboot(ostree, opts.soft_reboot, &updated_host)?;
+            let updated_host = crate::status::get_status(booted_ostree)?.1;
+            handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &updated_host)?;
         }
 
         if opts.apply {
@@ -1030,8 +1020,8 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
     let cancellable = gio::Cancellable::NONE;
 
-    let sysroot = &get_storage().await?;
-    let ostree = sysroot.get_ostree()?;
+    let storage = &get_storage().await?;
+    let ostree = storage.get_ostree()?;
     let repo = &ostree.repo();
     let (booted_deployment, _deployments, host) = crate::status::get_status_require_booted(ostree)?;
 
@@ -1081,16 +1071,20 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     }
 
     let stateroot = booted_deployment.osname();
-    let from = MergeState::from_stateroot(sysroot, &stateroot)?;
-    crate::deploy::stage(sysroot, from, &fetched, &new_spec, prog.clone()).await?;
+    let from = MergeState::from_stateroot(storage, &stateroot)?;
+    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone()).await?;
 
-    sysroot.update_mtime()?;
+    storage.update_mtime()?;
 
     if opts.soft_reboot.is_some() {
         // At this point we have staged the deployment and the host definition has changed.
         // We need the updated host status before we check if we can prepare the soft-reboot.
-        let updated_host = crate::status::get_status(ostree, Some(&booted_deployment))?.1;
-        handle_staged_soft_reboot(ostree, opts.soft_reboot, &updated_host)?;
+        let booted_ostree = BootedOstree {
+            sysroot: ostree,
+            deployment: booted_deployment.clone(),
+        };
+        let updated_host = crate::status::get_status(&booted_ostree)?.1;
+        handle_staged_soft_reboot(&booted_ostree, opts.soft_reboot, &updated_host)?;
     }
 
     if opts.apply {
@@ -1103,9 +1097,9 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 /// Implementation of the `bootc rollback` CLI command.
 #[context("Rollback")]
 async fn rollback(opts: &RollbackOpts) -> Result<()> {
-    let sysroot = &get_storage().await?;
-    let ostree = sysroot.get_ostree()?;
-    crate::deploy::rollback(sysroot).await?;
+    let storage = &get_storage().await?;
+    let ostree = storage.get_ostree()?;
+    crate::deploy::rollback(storage).await?;
 
     if opts.soft_reboot.is_some() {
         // Get status of rollback deployment to check soft-reboot capability
@@ -1125,8 +1119,8 @@ async fn rollback(opts: &RollbackOpts) -> Result<()> {
 /// Implementation of the `bootc edit` CLI command.
 #[context("Editing spec")]
 async fn edit(opts: EditOpts) -> Result<()> {
-    let sysroot = &get_storage().await?;
-    let ostree = sysroot.get_ostree()?;
+    let storage = &get_storage().await?;
+    let ostree = storage.get_ostree()?;
     let repo = &ostree.repo();
 
     let (booted_deployment, _deployments, host) = crate::status::get_status_require_booted(ostree)?;
@@ -1153,7 +1147,7 @@ async fn edit(opts: EditOpts) -> Result<()> {
     // We only support two state transitions right now; switching the image,
     // or flipping the bootloader ordering.
     if host.spec.boot_order != new_host.spec.boot_order {
-        return crate::deploy::rollback(sysroot).await;
+        return crate::deploy::rollback(storage).await;
     }
 
     let fetched = crate::deploy::pull(repo, new_spec.image, None, opts.quiet, prog.clone()).await?;
@@ -1161,10 +1155,10 @@ async fn edit(opts: EditOpts) -> Result<()> {
     // TODO gc old layers here
 
     let stateroot = booted_deployment.osname();
-    let from = MergeState::from_stateroot(sysroot, &stateroot)?;
-    crate::deploy::stage(sysroot, from, &fetched, &new_spec, prog.clone()).await?;
+    let from = MergeState::from_stateroot(storage, &stateroot)?;
+    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone()).await?;
 
-    sysroot.update_mtime()?;
+    storage.update_mtime()?;
 
     Ok(())
 }
@@ -1264,24 +1258,28 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
     match opt {
         Opt::Upgrade(opts) => {
-            if composefs_booted()?.is_some() {
-                upgrade_composefs(opts).await
-            } else {
-                upgrade(opts).await
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(booted_ostree) => {
+                    upgrade(opts, storage, &booted_ostree).await
+                }
+                BootedStorageKind::Composefs(booted_cfs) => {
+                    upgrade_composefs(opts, storage, &booted_cfs).await
+                }
             }
         }
         Opt::Switch(opts) => {
-            if composefs_booted()?.is_some() {
-                switch_composefs(opts).await
-            } else {
-                switch(opts).await
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => switch(opts).await,
+                BootedStorageKind::Composefs(_) => switch_composefs(opts).await,
             }
         }
         Opt::Rollback(opts) => {
-            if composefs_booted()?.is_some() {
-                composefs_rollback().await?
-            } else {
-                rollback(&opts).await?
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => rollback(&opts).await?,
+                BootedStorageKind::Composefs(_) => composefs_rollback().await?,
             }
 
             if opts.apply {
@@ -1292,10 +1290,10 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
         }
         Opt::Edit(opts) => edit(opts).await,
         Opt::UsrOverlay => {
-            if composefs_booted()?.is_some() {
-                composefs_usr_overlay()
-            } else {
-                usroverlay().await
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => usroverlay().await,
+                BootedStorageKind::Composefs(_) => composefs_usr_overlay(),
             }
         }
         Opt::Container(opts) => match opts {
@@ -1391,8 +1389,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
             }
             ImageOpts::PullFromDefaultStorage { image } => {
-                let sysroot = get_storage().await?;
-                sysroot
+                let storage = get_storage().await?;
+                storage
                     .get_ensure_imgstore()?
                     .pull_from_host_storage(&image)
                     .await
@@ -1492,8 +1490,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             InternalsOpts::Cfs { args } => crate::cfsctl::run_from_iter(args.iter()).await,
             InternalsOpts::Reboot => crate::reboot::reboot(),
             InternalsOpts::Fsck => {
-                let sysroot = &get_storage().await?;
-                crate::fsck::fsck(&sysroot, std::io::stdout().lock()).await?;
+                let storage = &get_storage().await?;
+                crate::fsck::fsck(&storage, std::io::stdout().lock()).await?;
                 Ok(())
             }
             InternalsOpts::FixupEtcFstab => crate::deploy::fixup_etc_fstab(&root),
@@ -1507,8 +1505,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
             InternalsOpts::Cleanup => {
-                let sysroot = get_storage().await?;
-                crate::deploy::cleanup(&sysroot).await
+                let storage = get_storage().await?;
+                crate::deploy::cleanup(&storage).await
             }
             InternalsOpts::Relabel { as_path, path } => {
                 let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
