@@ -19,7 +19,6 @@ use crate::{
 use std::str::FromStr;
 
 use bootc_utils::try_deserialize_timestamp;
-use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use ostree_container::OstreeImageReference;
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
@@ -245,16 +244,6 @@ async fn boot_entry_from_composefs_deployment(
     };
 
     Ok(e)
-}
-
-pub(crate) async fn composefs_deployment_status() -> Result<Host> {
-    let composefs_state = composefs_booted()?
-        .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
-
-    let sysroot =
-        Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening sysroot")?;
-
-    composefs_deployment_status_from(&sysroot, composefs_state).await
 }
 
 /// Get composefs status using provided storage and booted composefs data

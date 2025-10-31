@@ -19,7 +19,6 @@ use ostree_ext::sysroot::SysrootLock;
 
 use ostree_ext::ostree;
 
-use crate::bootc_composefs::status::composefs_deployment_status;
 use crate::cli::OutputFormat;
 use crate::spec::BootEntryComposefs;
 use crate::spec::ImageStatus;
@@ -376,7 +375,9 @@ async fn get_host() -> Result<Host> {
                 let (_deployments, host) = get_status(&booted_ostree)?;
                 host
             }
-            crate::store::BootedStorageKind::Composefs(_) => composefs_deployment_status().await?,
+            crate::store::BootedStorageKind::Composefs(booted_cfs) => {
+                crate::bootc_composefs::status::get_composefs_status(&storage, &booted_cfs).await?
+            }
         }
     } else {
         Default::default()

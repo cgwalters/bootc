@@ -1140,9 +1140,7 @@ async fn rollback(opts: &RollbackOpts) -> Result<()> {
         BootedStorageKind::Ostree(booted_ostree) => {
             rollback_ostree(opts, storage, &booted_ostree).await
         }
-        BootedStorageKind::Composefs(booted_cfs) => {
-            composefs_rollback(storage, &booted_cfs).await
-        }
+        BootedStorageKind::Composefs(booted_cfs) => composefs_rollback(storage, &booted_cfs).await,
     }
 }
 
@@ -1622,9 +1620,29 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
         },
 
-        Opt::ComposefsFinalizeStaged => composefs_backend_finalize().await,
+        Opt::ComposefsFinalizeStaged => {
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => {
+                    anyhow::bail!("ComposefsFinalizeStaged is only supported for composefs backend")
+                }
+                BootedStorageKind::Composefs(booted_cfs) => {
+                    composefs_backend_finalize(storage, &booted_cfs).await
+                }
+            }
+        }
 
-        Opt::ConfigDiff => get_etc_diff().await,
+        Opt::ConfigDiff => {
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => {
+                    anyhow::bail!("ConfigDiff is only supported for composefs backend")
+                }
+                BootedStorageKind::Composefs(booted_cfs) => {
+                    get_etc_diff(storage, &booted_cfs).await
+                }
+            }
+        }
 
         Opt::DeleteDeployment { depl_id } => {
             let storage = &get_storage().await?;

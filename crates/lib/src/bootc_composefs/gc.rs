@@ -16,12 +16,13 @@ use crate::{
         boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp},
         delete::{delete_image, delete_staged, delete_state_dir, get_image_objects},
         status::{
-            composefs_deployment_status, get_bootloader, get_sorted_grub_uki_boot_entries,
+            get_bootloader, get_composefs_status, get_sorted_grub_uki_boot_entries,
             get_sorted_type1_boot_entries,
         },
     },
     composefs_consts::{STATE_DIR_RELATIVE, USER_CFG},
     spec::Bootloader,
+    store::{BootedComposefs, Storage},
 };
 
 #[fn_error_context::context("Listing EROFS images")]
@@ -172,12 +173,11 @@ pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
 /// Similarly if EROFS image B1 doesn't exist, but state dir does, then delete the state dir and
 /// perform GC
 #[fn_error_context::context("Running composefs garbage collection")]
-pub(crate) async fn composefs_gc() -> Result<()> {
-    let host = composefs_deployment_status().await?;
-    let booted_cfs = host.require_composefs_booted()?;
+pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<()> {
+    let host = get_composefs_status(storage, booted_cfs).await?;
+    let booted_cfs_status = host.require_composefs_booted()?;
 
-    let sysroot =
-        Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening sysroot")?;
+    let sysroot = &storage.physical_root;
 
     let bootloader_entries = list_bootloader_entries()?;
     let images = list_erofs_images(&sysroot)?;
@@ -190,10 +190,10 @@ pub(crate) async fn composefs_gc() -> Result<()> {
 
     let staged = &host.status.staged;
 
-    if img_bootloader_diff.contains(&&booted_cfs.verity) {
+    if img_bootloader_diff.contains(&&booted_cfs_status.verity) {
         anyhow::bail!(
             "Inconsistent state. Booted entry '{}' found for cleanup",
-            booted_cfs.verity
+            booted_cfs_status.verity
         )
     }
 
