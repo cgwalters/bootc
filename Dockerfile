@@ -69,7 +69,10 @@ COPY --from=src /src /src
 WORKDIR /src
 # See https://www.reddit.com/r/rust/comments/126xeyx/exploring_the_problem_of_faster_cargo_docker/
 # We aren't using the full recommendations there, just the simple bits.
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome <<EORUN
+# First we download all of our Rust dependencies
+RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
+# Then on general principle all the stuff from the Makefile runs with no network
+RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none <<EORUN
 set -xeuo pipefail
 make
 make install-all DESTDIR=/out
@@ -83,11 +86,11 @@ FROM build as units
 # A place that we're more likely to be able to set xattrs
 VOLUME /var/tmp
 ENV TMPDIR=/var/tmp
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make install-unit-tests
+RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome --network=none make install-unit-tests
 
 # This just does syntax checking
 FROM build as validate
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make validate
+RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome --network=none make validate
 
 # The final image that derives from the original base and adds the release binaries
 FROM base
@@ -110,7 +113,7 @@ EORUN
 # Create a layer that is our new binaries
 COPY --from=build /out/ /
 # We have code in the initramfs so we always need to regenerate it
-RUN <<EORUN
+RUN --network=none <<EORUN
 set -xeuo pipefail
 if test -x /usr/lib/bootc/initramfs-setup; then
    kver=$(cd /usr/lib/modules && echo *);
