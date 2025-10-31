@@ -2265,7 +2265,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
     let sysroot = &crate::cli::get_storage().await?;
     let ostree = sysroot.get_ostree()?;
     let repo = &ostree.repo();
-    let (booted_deployment, _deployments, host) = crate::status::get_status_require_booted(ostree)?;
+    let (booted_ostree, _deployments, host) = crate::status::get_status_require_booted(ostree)?;
 
     let stateroots = list_stateroots(ostree)?;
     let target_stateroot = if let Some(s) = opts.stateroot {
@@ -2276,7 +2276,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
         r.name
     };
 
-    let booted_stateroot = booted_deployment.osname();
+    let booted_stateroot = booted_ostree.stateroot();
     assert!(booted_stateroot.as_str() != target_stateroot);
     let (fetched, spec) = if let Some(target) = opts.target_opts.imageref()? {
         let mut new_spec = host.spec;
@@ -2307,7 +2307,8 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
     let root_kargs = if opts.no_root_kargs {
         Vec::new()
     } else {
-        let bootcfg = booted_deployment
+        let bootcfg = booted_ostree
+            .deployment
             .bootconfig()
             .ok_or_else(|| anyhow!("Missing bootcfg for booted deployment"))?;
         if let Some(options) = bootcfg.get("options") {

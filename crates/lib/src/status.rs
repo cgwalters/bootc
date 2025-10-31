@@ -259,14 +259,14 @@ impl BootEntry {
 /// A variant of [`get_status`] that requires a booted deployment.
 pub(crate) fn get_status_require_booted(
     sysroot: &SysrootLock,
-) -> Result<(ostree::Deployment, Deployments, Host)> {
+) -> Result<(crate::store::BootedOstree<'_>, Deployments, Host)> {
     let booted_deployment = sysroot.require_booted_deployment()?;
     let booted_ostree = crate::store::BootedOstree {
         sysroot,
-        deployment: booted_deployment.clone(),
+        deployment: booted_deployment,
     };
     let (deployments, host) = get_status(&booted_ostree)?;
-    Ok((booted_deployment, deployments, host))
+    Ok((booted_ostree, deployments, host))
 }
 
 /// Gather the ostree deployment objects, but also extract metadata from them into
