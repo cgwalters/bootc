@@ -215,7 +215,7 @@ pub(crate) async fn composefs_rollback(
         }
 
         Bootloader::Systemd => {
-            let parent = get_sysroot_parent_dev()?;
+            let parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let (esp_part, ..) = get_esp_partition(&parent)?;
             let esp_mount = mount_esp(&esp_part)?;
 

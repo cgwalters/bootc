@@ -86,7 +86,7 @@ pub(crate) async fn composefs_backend_finalize(
     // Unmount EROFS
     drop(erofs_tmp_mnt);
 
-    let sysroot_parent = get_sysroot_parent_dev()?;
+    let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
     // NOTE: Assumption here that ESP will always be present
     let (esp_part, ..) = get_esp_partition(&sysroot_parent)?;
 

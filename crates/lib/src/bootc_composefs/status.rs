@@ -355,7 +355,7 @@ pub(crate) async fn composefs_deployment_status_from(
         //
         // See: https://uapi-group.org/specifications/specs/boot_loader_specification/#mount-points
         Bootloader::Systemd => {
-            let parent = get_sysroot_parent_dev()?;
+            let parent = get_sysroot_parent_dev(sysroot)?;
             let (esp_part, ..) = get_esp_partition(&parent)?;
 
             let esp_mount = mount_esp(&esp_part)?;

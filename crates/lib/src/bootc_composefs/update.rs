@@ -160,16 +160,19 @@ pub(crate) async fn upgrade_composefs(
     match boot_type {
         BootType::Bls => {
             boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade((&fs, &host)),
+                BootSetupType::Upgrade((storage, &fs, &host)),
                 repo,
                 &id,
                 entry,
             )?)
         }
 
-        BootType::Uki => {
-            setup_composefs_uki_boot(BootSetupType::Upgrade((&fs, &host)), repo, &id, entries)?
-        }
+        BootType::Uki => setup_composefs_uki_boot(
+            BootSetupType::Upgrade((storage, &fs, &host)),
+            repo,
+            &id,
+            entries,
+        )?,
     };
 
     write_composefs_state(

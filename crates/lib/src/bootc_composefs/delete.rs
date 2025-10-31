@@ -1,10 +1,7 @@
 use std::{collections::HashSet, io::Write, path::Path};
 
 use anyhow::{Context, Result};
-use cap_std_ext::{
-    cap_std::{ambient_authority, fs::Dir},
-    dirext::CapStdExtDirExt,
-};
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::Sha512HashValue;
 use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 
@@ -216,17 +213,20 @@ fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir, deleting_staged: bool) ->
 }
 
 #[fn_error_context::context("Deleting boot entries for deployment {}", deployment.deployment.verity)]
-fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool) -> Result<()> {
+fn delete_depl_boot_entries(
+    deployment: &DeploymentEntry,
+    physical_root: &Dir,
+    deleting_staged: bool,
+) -> Result<()> {
     match deployment.deployment.bootloader {
         Bootloader::Grub => {
-            let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
-                .context("Opening boot dir")?;
+            let boot_dir = physical_root.open_dir("boot").context("Opening boot dir")?;
 
             match deployment.deployment.boot_type {
                 BootType::Bls => delete_type1_entry(deployment, &boot_dir, deleting_staged),
 
                 BootType::Uki => {
-                    let device = get_sysroot_parent_dev()?;
+                    let device = get_sysroot_parent_dev(physical_root)?;
                     let (esp_part, ..) = get_esp_partition(&device)?;
                     let esp_mount = mount_esp(&esp_part)?;
 
@@ -242,7 +242,7 @@ fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool)
         }
 
         Bootloader::Systemd => {
-            let device = get_sysroot_parent_dev()?;
+            let device = get_sysroot_parent_dev(physical_root)?;
             let (esp_part, ..) = get_esp_partition(&device)?;
 
             let esp_mount = mount_esp(&esp_part)?;
@@ -362,7 +362,7 @@ pub(crate) async fn delete_composefs_deployment(
 
     tracing::info!("Deleting {kind}deployment '{deployment_id}'");
 
-    delete_depl_boot_entries(&depl_to_del, deleting_staged)?;
+    delete_depl_boot_entries(&depl_to_del, &storage.physical_root, deleting_staged)?;
 
     composefs_gc(storage, booted_cfs).await?;
 

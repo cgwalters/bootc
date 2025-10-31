@@ -5,10 +5,7 @@
 //! - We delete bootloader + image but fail to delete the state/unrefenced objects etc
 
 use anyhow::{Context, Result};
-use cap_std_ext::{
-    cap_std::{ambient_authority, fs::Dir},
-    dirext::CapStdExtDirExt,
-};
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 
 use crate::{
@@ -47,13 +44,12 @@ fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
 /// # Returns
 /// The fsverity of EROFS images corresponding to boot entries
 #[fn_error_context::context("Listing bootloader entries")]
-fn list_bootloader_entries() -> Result<Vec<String>> {
+fn list_bootloader_entries(physical_root: &Dir) -> Result<Vec<String>> {
     let bootloader = get_bootloader()?;
 
     let entries = match bootloader {
         Bootloader::Grub => {
-            let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
-                .context("Opening boot dir")?;
+            let boot_dir = physical_root.open_dir("boot").context("Opening boot dir")?;
 
             // Grub entries are always in boot
             let grub_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
@@ -79,7 +75,7 @@ fn list_bootloader_entries() -> Result<Vec<String>> {
         }
 
         Bootloader::Systemd => {
-            let device = get_sysroot_parent_dev()?;
+            let device = get_sysroot_parent_dev(physical_root)?;
             let (esp_part, ..) = get_esp_partition(&device)?;
             let esp_mount = mount_esp(&esp_part)?;
 
@@ -179,7 +175,7 @@ pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs
 
     let sysroot = &storage.physical_root;
 
-    let bootloader_entries = list_bootloader_entries()?;
+    let bootloader_entries = list_bootloader_entries(&storage.physical_root)?;
     let images = list_erofs_images(&sysroot)?;
 
     // Collect the deployments that have an image but no bootloader entry
