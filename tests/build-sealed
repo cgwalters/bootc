@@ -28,7 +28,7 @@ if test -z "${secureboot}"; then
   cd $secureboot
   if test '!' -f db.cer; then
     echo "Generating test Secure Boot keys"
-    uuidgen --random > GUID.txt
+    systemd-id128 new -u > GUID.txt
     openssl req -quiet -newkey rsa:4096 -nodes -keyout PK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Platform Key/' -out PK.crt
     openssl x509 -outform DER -in PK.crt -out PK.cer
     openssl req -quiet -newkey rsa:4096 -nodes -keyout KEK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Key Exchange Key/' -out KEK.crt
