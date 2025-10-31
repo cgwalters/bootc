@@ -1099,11 +1099,11 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
             }
             switch_ostree(opts, storage, &booted_ostree).await
         }
-        BootedStorageKind::Composefs(_) => {
+        BootedStorageKind::Composefs(booted_cfs) => {
             if opts.mutate_in_place {
                 anyhow::bail!("--mutate-in-place is not yet supported for composefs backend");
             }
-            switch_composefs(opts).await
+            switch_composefs(opts, storage, &booted_cfs).await
         }
     }
 }
@@ -1140,7 +1140,9 @@ async fn rollback(opts: &RollbackOpts) -> Result<()> {
         BootedStorageKind::Ostree(booted_ostree) => {
             rollback_ostree(opts, storage, &booted_ostree).await
         }
-        BootedStorageKind::Composefs(_) => composefs_rollback().await,
+        BootedStorageKind::Composefs(booted_cfs) => {
+            composefs_rollback(storage, &booted_cfs).await
+        }
     }
 }
 
@@ -1624,7 +1626,17 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
         Opt::ConfigDiff => get_etc_diff().await,
 
-        Opt::DeleteDeployment { depl_id } => delete_composefs_deployment(&depl_id).await,
+        Opt::DeleteDeployment { depl_id } => {
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => {
+                    anyhow::bail!("DeleteDeployment is only supported for composefs backend")
+                }
+                BootedStorageKind::Composefs(booted_cfs) => {
+                    delete_composefs_deployment(&depl_id, storage, &booted_cfs).await
+                }
+            }
+        }
     }
 }
 

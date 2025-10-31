@@ -17,7 +17,7 @@ use crate::{
         gc::composefs_gc,
         repo::open_composefs_repo,
         rollback::{composefs_rollback, rename_exchange_user_cfg},
-        status::{composefs_deployment_status, get_sorted_grub_uki_boot_entries},
+        status::{get_composefs_status, get_sorted_grub_uki_boot_entries},
     },
     composefs_consts::{
         COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
@@ -26,6 +26,7 @@ use crate::{
     parsers::bls_config::{parse_bls_config, BLSConfigType},
     spec::{BootEntry, Bootloader, DeploymentEntry},
     status::Slot,
+    store::{BootedComposefs, Storage},
 };
 
 #[fn_error_context::context("Deleting Type1 Entry {}", depl.deployment.verity)]
@@ -316,8 +317,12 @@ pub(crate) fn delete_staged(staged: &Option<BootEntry>) -> Result<()> {
 }
 
 #[fn_error_context::context("Deleting composefs deployment {}", deployment_id)]
-pub(crate) async fn delete_composefs_deployment(deployment_id: &str) -> Result<()> {
-    let host = composefs_deployment_status().await?;
+pub(crate) async fn delete_composefs_deployment(
+    deployment_id: &str,
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+) -> Result<()> {
+    let host = get_composefs_status(storage, booted_cfs).await?;
 
     let booted = host.require_composefs_booted()?;
 
@@ -344,7 +349,7 @@ pub(crate) async fn delete_composefs_deployment(deployment_id: &str) -> Result<(
 
     // Unqueue rollback. This makes it easier to delete boot entries later on
     if matches!(depl_to_del.ty, Some(Slot::Rollback)) && host.status.rollback_queued {
-        composefs_rollback().await?;
+        composefs_rollback(storage, booted_cfs).await?;
     }
 
     let kind = if depl_to_del.pinned {

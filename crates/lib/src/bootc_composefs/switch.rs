@@ -8,17 +8,22 @@ use crate::{
         repo::pull_composefs_repo,
         service::start_finalize_stated_svc,
         state::write_composefs_state,
-        status::composefs_deployment_status,
+        status::get_composefs_status,
     },
     cli::{imgref_for_switch, SwitchOpts},
+    store::{BootedComposefs, Storage},
 };
 
 #[context("Composefs Switching")]
-pub(crate) async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
+pub(crate) async fn switch_composefs(
+    opts: SwitchOpts,
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+) -> Result<()> {
     let target = imgref_for_switch(&opts)?;
     // TODO: Handle in-place
 
-    let host = composefs_deployment_status()
+    let host = get_composefs_status(storage, booted_cfs)
         .await
         .context("Getting composefs deployment status")?;
 
@@ -63,6 +68,7 @@ pub(crate) async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
         }
     };
 
+    // TODO: Remove this hardcoded path when write_composefs_state accepts a Dir
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
         id,

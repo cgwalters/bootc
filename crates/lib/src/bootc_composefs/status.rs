@@ -257,6 +257,16 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     composefs_deployment_status_from(&sysroot, composefs_state).await
 }
 
+/// Get composefs status using provided storage and booted composefs data
+/// instead of scraping global state.
+#[context("Getting composefs deployment status")]
+pub(crate) async fn get_composefs_status(
+    storage: &crate::store::Storage,
+    booted_cfs: &crate::store::BootedComposefs,
+) -> Result<Host> {
+    composefs_deployment_status_from(&storage.physical_root, booted_cfs.cmdline).await
+}
+
 #[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status_from(
     sysroot: &Dir,
