@@ -86,11 +86,11 @@ FROM build as units
 # A place that we're more likely to be able to set xattrs
 VOLUME /var/tmp
 ENV TMPDIR=/var/tmp
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome --network=none make install-unit-tests
+RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make install-unit-tests
 
 # This just does syntax checking
 FROM build as validate
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome --network=none make validate
+RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make validate
 
 # The final image that derives from the original base and adds the release binaries
 FROM base
