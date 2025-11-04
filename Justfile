@@ -65,15 +65,15 @@ build-disk *ARGS:
 #
 # This task runs *all* of the tmt-based tests using bcvk VMs
 test-tmt *ARGS: build-integration-test-image
-    cargo xtask run-tmt {{ARGS}}
+    cargo xtask run-tmt localhost/bootc-integration {{ARGS}}
 
 # Like test-tmt but assumes that the integration image is already built
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt {{ARGS}}
+    cargo xtask run-tmt localhost/bootc-integration {{ARGS}}
 
 # Run just one tmt test: `just test-tmt-one readonly-tests`
 test-tmt-one PLAN: build-integration-test-image
-    cargo xtask run-tmt {{PLAN}}
+    cargo xtask run-tmt localhost/bootc-integration {{PLAN}}
 
 # Run tests (unit and integration) that are containerized
 test-container: build-units build-integration-test-image
