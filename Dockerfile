@@ -94,21 +94,31 @@ RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothom
 
 # The final image that derives from the original base and adds the release binaries
 FROM base
-# Set this to 1 to default to systemd-boot
-ARG sdboot=0
+# See the Justfile for more on this
+ARG variant
 RUN <<EORUN
 set -xeuo pipefail
 # Ensure we've flushed out prior state (i.e. files no longer shipped from the old version);
 # and yes, we may need to go to building an RPM in this Dockerfile by default.
 rm -vf /usr/lib/systemd/system/multi-user.target.wants/bootc-*
-if test "$sdboot" = 1; then
-  dnf -y install systemd-boot-unsigned
-  # And uninstall bootupd
-  rpm -e bootupd
-  rm /usr/lib/bootupd/updates -rf
-  dnf clean all
-  rm -rf /var/cache /var/lib/{dnf,rhsm} /var/log/*
-fi
+case "${variant}" in
+  *-sdboot)
+    dnf -y install systemd-boot-unsigned
+    # And uninstall bootupd
+    rpm -e bootupd
+    rm /usr/lib/bootupd/updates -rf
+    dnf clean all
+    rm -rf /var/cache /var/lib/{dnf,rhsm} /var/log/*
+  ;;
+esac
+case "${variant}" in
+  composefs*)
+    cat > /usr/lib/bootc/install/80-ext4-composefs.conf <<EOF
+[install.filesystem.root]
+type = "ext4"
+EOF
+  ;;
+esac
 EORUN
 # Create a layer that is our new binaries
 COPY --from=build /out/ /

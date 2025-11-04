@@ -561,10 +561,19 @@ fn run_tmt(sh: &Shell, args: &[String]) -> Result<()> {
         println!("========================================\n");
 
         // Launch VM with bcvk
-        // Use ds=iid-datasource-none to disable cloud-init for faster boot
-        let launch_result = cmd!(sh, "bcvk libvirt run --name {vm_name} --detach --filesystem ext4 --karg=ds=iid-datasource-none {image}")
-            .run()
-            .context("Launching VM with bcvk");
+        let instargs = [
+            // We don't use cloud-init with bcvk right now, but it needs to be there for
+            // testing-farm+tmt
+            "--karg=ds=iid-datasource-none",
+            // TODO: Pass down the Secure Boot keys for tests if present
+            "--firmware=uefi-insecure",
+        ];
+        let launch_result = cmd!(
+            sh,
+            "bcvk libvirt run --name {vm_name} --detach {instargs...} {image}"
+        )
+        .run()
+        .context("Launching VM with bcvk");
 
         if let Err(e) = launch_result {
             eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
@@ -758,8 +767,7 @@ fn tmt_provision(sh: &Shell, args: &[String]) -> Result<()> {
         .context("Creating target directory")?;
     let key_path = key_dir.join(format!("{}.ssh-key", vm_name));
 
-    std::fs::write(&key_path, ssh_key)
-        .context("Writing SSH key file")?;
+    std::fs::write(&key_path, ssh_key).context("Writing SSH key file")?;
 
     // Set proper permissions on key file (0600)
     #[cfg(unix)]
@@ -786,7 +794,10 @@ fn tmt_provision(sh: &Shell, args: &[String]) -> Result<()> {
     println!("    --user root --key {} \\", key_path);
     println!("    plan --name <PLAN_NAME>");
     println!("\nTo connect via SSH:");
-    println!("  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost", key_path, ssh_port);
+    println!(
+        "  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost",
+        key_path, ssh_port
+    );
     println!("\nTo cleanup:");
     println!("  bcvk libvirt rm --stop --force {}", vm_name);
     println!("========================================\n");

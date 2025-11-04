@@ -206,7 +206,7 @@ jobs:
           libvirt: true
 
       - name: Build container
-        run: just build-sealed
+        run: just build --variant=composefs-sealeduki-sdboot
 
       - name: Test
-        run: just test-composefs
+        run: just test-tmt-nobuild
