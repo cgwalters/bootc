@@ -51,6 +51,7 @@ const TASKS: &[(&str, fn(&Shell, &[String]) -> Result<()>)] = &[
     ("package-srpm", package_srpm),
     ("spec", spec),
     ("run-tmt", run_tmt),
+    ("tmt-provision", tmt_provision),
 ];
 
 fn try_main() -> Result<()> {
@@ -410,6 +411,7 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
             sh,
             "ssh -i {key_path} -p {port_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes root@localhost 'export TEST=value; whoami'"
         )
+        .ignore_stderr()
         .read();
 
         match &result {
@@ -700,6 +702,94 @@ fn run_tmt(sh: &Shell, args: &[String]) -> Result<()> {
     if !all_passed {
         anyhow::bail!("Some test plans failed");
     }
+
+    Ok(())
+}
+
+/// Provision a VM for manual tmt testing
+/// Wraps bcvk libvirt run and waits for SSH connectivity
+///
+/// Arguments:
+/// - First arg (required): Image name (e.g. "localhost/bootc-integration")
+/// - Second arg (optional): VM name (defaults to "bootc-tmt-manual-<timestamp>")
+///
+/// Prints SSH connection details for use with tmt provision --how connect
+#[context("Provisioning VM for TMT")]
+fn tmt_provision(sh: &Shell, args: &[String]) -> Result<()> {
+    // Check for bcvk
+    if cmd!(sh, "which bcvk").ignore_status().read().is_err() {
+        anyhow::bail!("bcvk is not available in PATH");
+    }
+
+    // Parse arguments
+    if args.is_empty() {
+        anyhow::bail!("Image name is required as first argument");
+    }
+
+    let image = &args[0];
+    let vm_name = if args.len() > 1 {
+        args[1].clone()
+    } else {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("Getting timestamp")?
+            .as_secs();
+        format!("bootc-tmt-manual-{}", timestamp)
+    };
+
+    println!("Provisioning VM...");
+    println!("  Image: {}", image);
+    println!("  VM name: {}\n", vm_name);
+
+    // Launch VM with bcvk
+    // Use ds=iid-datasource-none to disable cloud-init for faster boot
+    cmd!(sh, "bcvk libvirt run --name {vm_name} --detach --filesystem ext4 --karg=ds=iid-datasource-none {image}")
+        .run()
+        .context("Launching VM with bcvk")?;
+
+    println!("VM launched, waiting for SSH...");
+
+    // Wait for VM to be ready and get SSH info
+    let (ssh_port, ssh_key) = wait_for_vm_ready(sh, &vm_name)?;
+
+    // Save SSH private key to target directory
+    let key_dir = Utf8Path::new("target");
+    sh.create_dir(key_dir)
+        .context("Creating target directory")?;
+    let key_path = key_dir.join(format!("{}.ssh-key", vm_name));
+
+    std::fs::write(&key_path, ssh_key)
+        .context("Writing SSH key file")?;
+
+    // Set proper permissions on key file (0600)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .context("Setting SSH key file permissions")?;
+    }
+
+    println!("SSH key saved to: {}", key_path);
+
+    // Verify SSH connectivity
+    verify_ssh_connectivity(sh, ssh_port, &key_path)?;
+
+    println!("\n========================================");
+    println!("VM provisioned successfully!");
+    println!("========================================");
+    println!("VM name: {}", vm_name);
+    println!("SSH port: {}", ssh_port);
+    println!("SSH key: {}", key_path);
+    println!("\nTo use with tmt:");
+    println!("  tmt run --all provision --how connect \\");
+    println!("    --guest localhost --port {} \\", ssh_port);
+    println!("    --user root --key {} \\", key_path);
+    println!("    plan --name <PLAN_NAME>");
+    println!("\nTo connect via SSH:");
+    println!("  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost", key_path, ssh_port);
+    println!("\nTo cleanup:");
+    println!("  bcvk libvirt rm --stop --force {}", vm_name);
+    println!("========================================\n");
 
     Ok(())
 }
