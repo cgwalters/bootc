@@ -10,7 +10,6 @@ use fn_error_context::context;
 use ostree::glib;
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::oci_spec;
 use ostree_ext::oci_spec::image::Digest;
@@ -368,19 +367,16 @@ pub(crate) fn get_status(
 }
 
 async fn get_host() -> Result<Host> {
-    let host = if ostree_booted()? {
-        let storage = super::cli::get_storage().await?;
-        match storage.kind()? {
-            crate::store::BootedStorageKind::Ostree(booted_ostree) => {
-                let (_deployments, host) = get_status(&booted_ostree)?;
-                host
-            }
-            crate::store::BootedStorageKind::Composefs(booted_cfs) => {
-                crate::bootc_composefs::status::get_composefs_status(&storage, &booted_cfs).await?
-            }
+    let storage = super::cli::get_storage().await?;
+
+    let host = match storage.kind()? {
+        crate::store::BootedStorageKind::Ostree(booted_ostree) => {
+            let (_deployments, host) = get_status(&booted_ostree)?;
+            host
         }
-    } else {
-        Default::default()
+        crate::store::BootedStorageKind::Composefs(booted_cfs) => {
+            crate::bootc_composefs::status::get_composefs_status(&storage, &booted_cfs).await?
+        }
     };
 
     Ok(host)

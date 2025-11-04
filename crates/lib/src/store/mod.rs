@@ -31,6 +31,7 @@ use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
 use crate::bootc_composefs::status::{composefs_booted, ComposefsCmdline};
+use crate::cli::prepare_for_write;
 use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::ImageStatus;
@@ -111,11 +112,12 @@ impl BootedStorage {
     pub(crate) async fn new() -> Result<Self> {
         let physical_root = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
             .context("Opening /sysroot")?;
+
         let run =
             Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
+
         if let Some(cmdline) = composefs_booted()? {
-            let mut composefs =
-                ComposefsRepository::open_path(physical_root.open_dir(COMPOSEFS)?, ".")?;
+            let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
             if cmdline.insecure {
                 composefs.set_insecure(true);
             }
@@ -128,24 +130,26 @@ impl BootedStorage {
                 composefs: OnceCell::from(composefs),
                 imgstore: Default::default(),
             };
-            Ok(Self { storage })
-        } else {
-            let sysroot = ostree::Sysroot::new_default();
-            sysroot.set_mount_namespace_in_use();
-            let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
-            sysroot.load(gio::Cancellable::NONE)?;
-            // Verify this is a booted system
-            let _ = sysroot.require_booted_deployment()?;
 
-            let storage = Storage {
-                physical_root,
-                run,
-                ostree: OnceCell::from(sysroot),
-                composefs: Default::default(),
-                imgstore: Default::default(),
-            };
-            Ok(Self { storage })
+            return Ok(Self { storage });
         }
+
+        prepare_for_write()?;
+
+        let sysroot = ostree::Sysroot::new_default();
+        sysroot.set_mount_namespace_in_use();
+        let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
+        sysroot.load(gio::Cancellable::NONE)?;
+
+        let storage = Storage {
+            physical_root,
+            run,
+            ostree: OnceCell::from(sysroot),
+            composefs: Default::default(),
+            imgstore: Default::default(),
+        };
+
+        Ok(Self { storage })
     }
 
     /// Determine the boot storage backend kind.

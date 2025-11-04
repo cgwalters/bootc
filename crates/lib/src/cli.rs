@@ -715,7 +715,6 @@ pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
 /// Load global storage state, expecting that we're booted into a bootc system.
 #[context("Initializing storage")]
 pub(crate) async fn get_storage() -> Result<crate::store::BootedStorage> {
-    prepare_for_write()?;
     BootedStorage::new().await
 }
 
@@ -842,7 +841,7 @@ fn soft_reboot_rollback(booted_ostree: &BootedOstree<'_>) -> Result<()> {
 /// IMPORTANT: This may end up re-executing the current process,
 /// so anything that happens before this should be idempotent.
 #[context("Preparing for write")]
-fn prepare_for_write() -> Result<()> {
+pub(crate) fn prepare_for_write() -> Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // This is intending to give "at most once" semantics to this
