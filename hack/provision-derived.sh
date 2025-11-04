@@ -48,6 +48,13 @@ KARGEOF
 # And cloud-init stuff
 ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
 
+# Allow root SSH login for testing with bcvk/tmt
+mkdir -p /etc/cloud/cloud.cfg.d
+cat > /etc/cloud/cloud.cfg.d/80-enable-root.cfg <<'CLOUDEOF'
+# Enable root login for testing
+disable_root: false
+CLOUDEOF
+
 # Stock extra cleaning of logs and caches in general (mostly dnf)
 rm /var/log/* /var/cache /var/lib/{dnf,rpm-state,rhsm} -rf
 # And clean root's homedir
