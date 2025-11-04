@@ -361,32 +361,6 @@ fn update_generated(sh: &Shell, _args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Read the bcvk image configuration from .bcvk/config.toml
-/// Defaults to localhost/bootc-integration which includes testing utilities like rsync
-#[context("Reading bcvk config")]
-fn read_bcvk_image() -> Result<String> {
-    let config_path = Utf8Path::new(".bcvk/config.toml");
-    if !config_path.exists() {
-        return Ok("localhost/bootc-integration".to_string());
-    }
-
-    let config_content = std::fs::read_to_string(config_path)
-        .context("Reading .bcvk/config.toml")?;
-
-    let config: toml::Value = toml::from_str(&config_content)
-        .context("Parsing .bcvk/config.toml")?;
-
-    if let Some(vm) = config.get("vm") {
-        if let Some(image) = vm.get("image") {
-            if let Some(image_str) = image.as_str() {
-                return Ok(image_str.to_string());
-            }
-        }
-    }
-
-    Ok("localhost/bootc-integration".to_string())
-}
-
 /// Wait for a bcvk VM to be ready and return SSH connection info
 #[context("Waiting for VM to be ready")]
 fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
@@ -446,7 +420,10 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
         }
 
         if attempt % 10 == 0 {
-            println!("Waiting for SSH... attempt {}/{}", attempt, SSH_CONNECTIVITY_MAX_ATTEMPTS);
+            println!(
+                "Waiting for SSH... attempt {}/{}",
+                attempt, SSH_CONNECTIVITY_MAX_ATTEMPTS
+            );
         }
 
         if attempt < SSH_CONNECTIVITY_MAX_ATTEMPTS {
@@ -491,13 +468,23 @@ fn check_dependencies(sh: &Shell) -> Result<()> {
 
 /// Run TMT tests using bcvk for VM management
 /// This spawns a separate VM per test plan to avoid state leakage between tests.
+///
+/// Arguments:
+/// - First arg (required): Image name (e.g. "localhost/bootc-integration")
+/// - Remaining args (optional): Test plan filters (e.g. "readonly")
 #[context("Running TMT tests")]
 fn run_tmt(sh: &Shell, args: &[String]) -> Result<()> {
     // Check dependencies first
     check_dependencies(sh)?;
 
-    // Read bcvk configuration to get the image name
-    let image = read_bcvk_image()?;
+    // First arg is the image name, remaining args are test plan filters
+    if args.is_empty() {
+        anyhow::bail!("Image name is required as first argument");
+    }
+
+    let image = &args[0];
+    let filter_args = &args[1..];
+
     println!("Using bcvk image: {}", image);
 
     // Create tmt-workdir and copy tmt bits to it
@@ -527,13 +514,16 @@ fn run_tmt(sh: &Shell, args: &[String]) -> Result<()> {
         .collect();
 
     // Filter plans based on user arguments
-    if !args.is_empty() {
+    if !filter_args.is_empty() {
         let original_count = plans.len();
-        plans.retain(|plan| {
-            args.iter().any(|arg| plan.contains(arg.as_str()))
-        });
+        plans.retain(|plan| filter_args.iter().any(|arg| plan.contains(arg.as_str())));
         if plans.len() < original_count {
-            println!("Filtered from {} to {} plan(s) based on arguments: {:?}", original_count, plans.len(), args);
+            println!(
+                "Filtered from {} to {} plan(s) based on arguments: {:?}",
+                original_count,
+                plans.len(),
+                filter_args
+            );
         }
     }
 
@@ -608,8 +598,7 @@ fn run_tmt(sh: &Shell, args: &[String]) -> Result<()> {
         println!("VM ready, SSH port: {}", ssh_port);
 
         // Save SSH private key to a temporary file
-        let key_file = tempfile::NamedTempFile::new()
-            .context("Creating temporary SSH key file");
+        let key_file = tempfile::NamedTempFile::new().context("Creating temporary SSH key file");
 
         let key_file = match key_file {
             Ok(f) => f,
