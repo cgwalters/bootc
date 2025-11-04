@@ -144,23 +144,8 @@ jobs:
       - name: Build container and disk image
         run: |
           set -xeuo pipefail
-          build_args=()
-          # Map from an ID-VERSIONID pair to a container ref
-          target=${{ matrix.test_os }}
-          OS_ID=$(echo "$target" | cut -d '-' -f 1)
-          OS_VERSION_ID=$(echo "$target" | cut -d '-' -f 2)
-          # Base image
-          case "$OS_ID" in
-              "centos")
-                  BASE="quay.io/centos-bootc/centos-bootc:stream${OS_VERSION_ID}"
-              ;;
-              "fedora")
-                  BASE="quay.io/fedora/fedora-bootc:${OS_VERSION_ID}"
-              ;;
-              *) echo "Unknown OS: ${OS_ID}" 1>&2; exit 1
-              ;;
-          esac
-          build_args+=("--build-arg=base=$BASE")
+          target=$(just pullspec-for-os ${{ matrix.test_os }})
+          build_args=("--build-arg=base=$BASE")
           just build ${build_args[@]}
           just build-integration-test-image
           # Cross check we're using the right base
@@ -194,7 +179,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # TODO expand this matrix, we need to make it better to override the target
+        # OS via Justfile variables too
         test_os: [centos-10]
+        variant: [composefs-sealeduki-sdboot]
 
     runs-on: ubuntu-24.04
 
@@ -204,9 +192,11 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
         with:
           libvirt: true
+      - name: Install tmt
+        run: pip install --user "tmt[provision-virtual]"
 
       - name: Build container
-        run: just build-sealed
+        run: just variant=composefs-sealeduki-sdboot build-integration-test-image
 
-      - name: Test
-        run: just test-composefs
+      - name: Test (readonly)
+        run: just variant=composefs-sealeduki-sdboot test-tmt readonly

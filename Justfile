@@ -11,25 +11,27 @@
 
 # --------------------------------------------------------------------
 
+# ostree: The default
+# composefs-sealeduki-sdboot: A system with a sealed composefs using systemd-boot
+variant := "ostree"
+
 # Build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
 build *ARGS:
-    podman build --jobs=4 -t localhost/bootc {{ARGS}} .
-
-# Build a sealed image from current sources. This will default to
-# generating Secure Boot keys in target/test-secureboot.
-build-sealed *ARGS:
-    podman build --build-arg=sdboot=1 --jobs=4 -t localhost/bootc-unsealed {{ARGS}} .
-    ./tests/build-sealed localhost/bootc-unsealed localhost/bootc
+    podman build --jobs=4 -t localhost/bootc-bin --build-arg=variant={{variant}} {{ARGS}} .
+    ./tests/build-sealed {{variant}} localhost/bootc-bin localhost/bootc
 
 # This container image has additional testing content and utilities
-build-integration-test-image *ARGS:
-    cd hack && podman build --jobs=4 -t localhost/bootc-integration -f Containerfile {{ARGS}} .
+build-integration-test-image *ARGS: build
+    cd hack && podman build --jobs=4 -t localhost/bootc-integration-bin -f Containerfile {{ARGS}} .
+    ./tests/build-sealed {{variant}} localhost/bootc-integration-bin localhost/bootc-integration
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
-test-composefs: build-sealed
+# Build+test composefs; compat alias
+test-composefs:
+    just build --variant=composefs-sealeduki-sdboot
     cargo run --release -p tests-integration -- composefs-bcvk localhost/bootc
 
 # Only used by ci.yml right now
@@ -79,6 +81,23 @@ test-tmt-one PLAN: build-integration-test-image
 test-container: build-units build-integration-test-image
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
     podman run --rm localhost/bootc-integration bootc-integration-tests container
+
+# Print the container image reference for a given short $ID-VERSION_ID
+pullspec-for-os NAME:
+    #!/bin/bash
+    OS_ID=$(echo "{{NAME}}" | cut -d '-' -f 1)
+    OS_VERSION_ID=$(echo "{{NAME}}" | cut -d '-' -f 2)
+    # Base image
+    case "$OS_ID" in
+        "centos")
+            echo "quay.io/centos-bootc/centos-bootc:stream${OS_VERSION_ID}"
+        ;;
+        "fedora")
+            echo "quay.io/fedora/fedora-bootc:${OS_VERSION_ID}"
+        ;;
+        *) echo "Unknown OS: ${OS_ID}" 1>&2; exit 1
+        ;;
+    esac
 
 build-mdbook:
     cd docs && podman build -t localhost/bootc-mdbook -f Dockerfile.mdbook
