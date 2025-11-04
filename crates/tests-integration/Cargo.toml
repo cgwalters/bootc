@@ -23,6 +23,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 xshell = { workspace = true }
+bootc-kernel-cmdline = { path = "../kernel_cmdline", version = "0.0.0" }
 
 # Crate-specific dependencies
 libtest-mimic = "0.8.0"

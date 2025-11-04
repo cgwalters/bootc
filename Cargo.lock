@@ -2624,6 +2624,7 @@ name = "tests-integration"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bootc-kernel-cmdline",
  "camino",
  "cap-std-ext",
  "clap",

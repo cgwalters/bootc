@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bootc_kernel_cmdline;
 use camino::Utf8Path;
 use libtest_mimic::Trial;
 use xshell::{cmd, Shell};
@@ -57,6 +58,28 @@ fn inner_tests() -> Vec<Trial> {
         assert!(st.is_object());
         assert!(Utf8Path::new("/sysroot/composefs").try_exists()?);
         assert!(!Utf8Path::new("/sysroot/ostree").try_exists()?);
+
+        let cmdline = bootc_kernel_cmdline::utf8::Cmdline::from_proc()?;
+
+        let cfs = cmdline.find("composefs");
+        assert!(cfs.is_some());
+        let cfs = cfs.unwrap();
+
+        let verity_from_cmdline = cfs.value();
+        assert!(verity_from_cmdline.is_some());
+        let verity_from_cmdline = verity_from_cmdline.unwrap();
+
+        let verity_from_status = st
+            .get("status")
+            .and_then(|s| s.get("booted"))
+            .and_then(|b| b.get("composefs"))
+            .and_then(|c| c.get("verity"))
+            .and_then(|v| v.as_str());
+
+        assert!(verity_from_status.is_some());
+
+        assert_eq!(verity_from_status.unwrap(), verity_from_cmdline);
+
         Ok(())
     })]
     .into_iter()
