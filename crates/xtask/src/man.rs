@@ -398,7 +398,7 @@ pub fn sync_all_man_pages(sh: &Shell) -> Result<()> {
 
 /// Generate man pages from hand-written markdown sources
 #[context("Generating manpages")]
-pub fn generate_man_pages(sh: &Shell) -> Result<()> {
+pub fn generate_man_pages(sh: &Shell, _args: &[String]) -> Result<()> {
     let man_src_dir = Utf8Path::new("docs/src/man");
     let man_output_dir = Utf8Path::new("target/man");
 

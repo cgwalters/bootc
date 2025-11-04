@@ -63,18 +63,17 @@ build-disk *ARGS:
 # updates are supported) as if it were a production environment use
 # https://github.com/teemtee/tmt.
 #
-# This task runs *all* of the tmt-based tests targeting the disk image generated
-# in the previous step.
-test-tmt *ARGS: build-disk
-    ./tests/run-tmt.sh {{ARGS}}
+# This task runs *all* of the tmt-based tests using bcvk VMs
+test-tmt *ARGS: build-integration-test-image
+    cargo xtask run-tmt {{ARGS}}
 
-# Like test-tmt but assumes that a disk image is already built
+# Like test-tmt but assumes that the integration image is already built
 test-tmt-nobuild *ARGS:
-    ./tests/run-tmt.sh {{ARGS}}
+    cargo xtask run-tmt {{ARGS}}
 
-# Run just one tmt test: `just test-tmt-one test-20-local-upgrade`
-test-tmt-one PLAN: build-disk
-    ./tests/run-tmt.sh plan --name {{PLAN}}
+# Run just one tmt test: `just test-tmt-one readonly-tests`
+test-tmt-one PLAN: build-integration-test-image
+    cargo xtask run-tmt {{PLAN}}
 
 # Run tests (unit and integration) that are containerized
 test-container: build-units build-integration-test-image

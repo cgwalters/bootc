@@ -25,6 +25,12 @@ const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
     "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
 ];
 
+// VM and SSH connectivity timeouts for bcvk integration
+// Cloud-init can take 2-3 minutes to start SSH
+const VM_READY_TIMEOUT_SECS: u64 = 60;
+const SSH_CONNECTIVITY_MAX_ATTEMPTS: u32 = 60;
+const SSH_CONNECTIVITY_RETRY_DELAY_SECS: u64 = 3;
+
 fn main() {
     use std::io::Write as _;
 
@@ -38,12 +44,13 @@ fn main() {
 }
 
 #[allow(clippy::type_complexity)]
-const TASKS: &[(&str, fn(&Shell) -> Result<()>)] = &[
+const TASKS: &[(&str, fn(&Shell, &[String]) -> Result<()>)] = &[
     ("manpages", man::generate_man_pages),
     ("update-generated", update_generated),
     ("package", package),
     ("package-srpm", package_srpm),
     ("spec", spec),
+    ("run-tmt", run_tmt),
 ];
 
 fn try_main() -> Result<()> {
@@ -68,6 +75,7 @@ fn try_main() -> Result<()> {
     }
 
     let task = std::env::args().nth(1);
+    let extra_args: Vec<String> = std::env::args().skip(2).collect();
 
     let sh = xshell::Shell::new()?;
     if let Some(cmd) = task.as_deref() {
@@ -75,9 +83,9 @@ fn try_main() -> Result<()> {
             .iter()
             .find_map(|(k, f)| (*k == cmd).then_some(*f))
             .unwrap_or(print_help);
-        return f(&sh);
+        return f(&sh, &extra_args);
     } else {
-        print_help(&sh)?;
+        print_help(&sh, &extra_args)?;
         Ok(())
     }
 }
@@ -197,7 +205,7 @@ fn impl_package(sh: &Shell) -> Result<Package> {
     })
 }
 
-fn package(sh: &Shell) -> Result<()> {
+fn package(sh: &Shell, _args: &[String]) -> Result<()> {
     let p = impl_package(sh)?.srcpath;
     println!("Generated: {p}");
     Ok(())
@@ -232,7 +240,7 @@ fn update_spec(sh: &Shell) -> Result<Utf8PathBuf> {
     Ok(spec_path)
 }
 
-fn spec(sh: &Shell) -> Result<()> {
+fn spec(sh: &Shell, _args: &[String]) -> Result<()> {
     let s = update_spec(sh)?;
     println!("Generated: {s}");
     Ok(())
@@ -316,7 +324,7 @@ fn impl_srpm(sh: &Shell) -> Result<Utf8PathBuf> {
     Ok(dest)
 }
 
-fn package_srpm(sh: &Shell) -> Result<()> {
+fn package_srpm(sh: &Shell, _args: &[String]) -> Result<()> {
     let srpm = impl_srpm(sh)?;
     println!("Generated: {srpm}");
     Ok(())
@@ -343,7 +351,7 @@ fn update_json_schemas(sh: &Shell) -> Result<()> {
 /// - Syncing CLI options to existing man pages
 /// - Updating JSON schema files
 #[context("Updating generated files")]
-fn update_generated(sh: &Shell) -> Result<()> {
+fn update_generated(sh: &Shell, _args: &[String]) -> Result<()> {
     // Update man pages (create new templates + sync options)
     man::update_manpages(sh)?;
 
@@ -353,7 +361,361 @@ fn update_generated(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
-fn print_help(_sh: &Shell) -> Result<()> {
+/// Read the bcvk image configuration from .bcvk/config.toml
+/// Defaults to localhost/bootc-integration which includes testing utilities like rsync
+#[context("Reading bcvk config")]
+fn read_bcvk_image() -> Result<String> {
+    let config_path = Utf8Path::new(".bcvk/config.toml");
+    if !config_path.exists() {
+        return Ok("localhost/bootc-integration".to_string());
+    }
+
+    let config_content = std::fs::read_to_string(config_path)
+        .context("Reading .bcvk/config.toml")?;
+
+    let config: toml::Value = toml::from_str(&config_content)
+        .context("Parsing .bcvk/config.toml")?;
+
+    if let Some(vm) = config.get("vm") {
+        if let Some(image) = vm.get("image") {
+            if let Some(image_str) = image.as_str() {
+                return Ok(image_str.to_string());
+            }
+        }
+    }
+
+    Ok("localhost/bootc-integration".to_string())
+}
+
+/// Wait for a bcvk VM to be ready and return SSH connection info
+#[context("Waiting for VM to be ready")]
+fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
+    use std::thread;
+    use std::time::Duration;
+
+    for attempt in 1..=VM_READY_TIMEOUT_SECS {
+        if let Ok(json_output) = cmd!(sh, "bcvk libvirt inspect {vm_name} --format=json")
+            .ignore_stderr()
+            .read()
+        {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_output) {
+                if let (Some(ssh_port), Some(ssh_key)) = (
+                    json.get("ssh_port").and_then(|v| v.as_u64()),
+                    json.get("ssh_private_key").and_then(|v| v.as_str()),
+                ) {
+                    let ssh_port = ssh_port as u16;
+                    return Ok((ssh_port, ssh_key.to_string()));
+                }
+            }
+        }
+
+        if attempt < VM_READY_TIMEOUT_SECS {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    anyhow::bail!(
+        "VM {} did not become ready within {} seconds",
+        vm_name,
+        VM_READY_TIMEOUT_SECS
+    )
+}
+
+/// Verify SSH connectivity to the VM
+/// Uses a more complex command similar to what TMT runs to ensure full readiness
+#[context("Verifying SSH connectivity")]
+fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+
+    let port_str = port.to_string();
+    for attempt in 1..=SSH_CONNECTIVITY_MAX_ATTEMPTS {
+        // Test with a complex command like TMT uses (exports + whoami)
+        // Use IdentitiesOnly=yes to prevent ssh-agent from offering other keys
+        let result = cmd!(
+            sh,
+            "ssh -i {key_path} -p {port_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes root@localhost 'export TEST=value; whoami'"
+        )
+        .read();
+
+        match &result {
+            Ok(output) if output.trim() == "root" => {
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        if attempt % 10 == 0 {
+            println!("Waiting for SSH... attempt {}/{}", attempt, SSH_CONNECTIVITY_MAX_ATTEMPTS);
+        }
+
+        if attempt < SSH_CONNECTIVITY_MAX_ATTEMPTS {
+            thread::sleep(Duration::from_secs(SSH_CONNECTIVITY_RETRY_DELAY_SECS));
+        }
+    }
+
+    anyhow::bail!(
+        "SSH connectivity check failed after {} attempts",
+        SSH_CONNECTIVITY_MAX_ATTEMPTS
+    )
+}
+
+/// Sanitize a plan name for use in a VM name
+/// Replaces non-alphanumeric characters (except - and _) with dashes
+/// Returns "plan" if the result would be empty
+fn sanitize_plan_name(plan: &str) -> String {
+    let sanitized = plan
+        .replace('/', "-")
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "plan".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// Check that required dependencies are available
+#[context("Checking dependencies")]
+fn check_dependencies(sh: &Shell) -> Result<()> {
+    for tool in ["bcvk", "tmt", "rsync"] {
+        cmd!(sh, "which {tool}")
+            .ignore_stdout()
+            .run()
+            .with_context(|| format!("{} is not available in PATH", tool))?;
+    }
+    Ok(())
+}
+
+/// Run TMT tests using bcvk for VM management
+/// This spawns a separate VM per test plan to avoid state leakage between tests.
+#[context("Running TMT tests")]
+fn run_tmt(sh: &Shell, args: &[String]) -> Result<()> {
+    // Check dependencies first
+    check_dependencies(sh)?;
+
+    // Read bcvk configuration to get the image name
+    let image = read_bcvk_image()?;
+    println!("Using bcvk image: {}", image);
+
+    // Create tmt-workdir and copy tmt bits to it
+    // This works around https://github.com/teemtee/tmt/issues/4062
+    let workdir = Utf8Path::new("target/tmt-workdir");
+    sh.create_dir(workdir)
+        .with_context(|| format!("Creating {}", workdir))?;
+
+    // rsync .fmf and tmt directories to workdir
+    cmd!(sh, "rsync -a --delete --force .fmf tmt {workdir}/")
+        .run()
+        .with_context(|| format!("Copying tmt files to {}", workdir))?;
+
+    // Change to workdir for running tmt commands
+    let _dir = sh.push_dir(workdir);
+
+    // Get the list of plans
+    println!("Discovering test plans...");
+    let plans_output = cmd!(sh, "tmt plan ls")
+        .read()
+        .context("Getting list of test plans")?;
+
+    let mut plans: Vec<&str> = plans_output
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && line.starts_with("/"))
+        .collect();
+
+    // Filter plans based on user arguments
+    if !args.is_empty() {
+        let original_count = plans.len();
+        plans.retain(|plan| {
+            args.iter().any(|arg| plan.contains(arg.as_str()))
+        });
+        if plans.len() < original_count {
+            println!("Filtered from {} to {} plan(s) based on arguments: {:?}", original_count, plans.len(), args);
+        }
+    }
+
+    if plans.is_empty() {
+        println!("No test plans found");
+        return Ok(());
+    }
+
+    println!("Found {} test plan(s): {:?}", plans.len(), plans);
+
+    // Generate a timestamp for VM names (using process ID for uniqueness)
+    let timestamp = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("Getting timestamp")?
+            .as_secs(),
+        std::process::id()
+    );
+
+    // Track overall success/failure
+    let mut all_passed = true;
+    let mut test_results = Vec::new();
+
+    // Run each plan in its own VM
+    for plan in plans {
+        let plan_name = sanitize_plan_name(plan);
+        let vm_name = format!("bootc-tmt-{}-{}", timestamp, plan_name);
+
+        println!("\n========================================");
+        println!("Running plan: {}", plan);
+        println!("VM name: {}", vm_name);
+        println!("========================================\n");
+
+        // Launch VM with bcvk
+        // Use ds=iid-datasource-none to disable cloud-init for faster boot
+        let launch_result = cmd!(sh, "bcvk libvirt run --name {vm_name} --detach --filesystem ext4 --karg=ds=iid-datasource-none {image}")
+            .run()
+            .context("Launching VM with bcvk");
+
+        if let Err(e) = launch_result {
+            eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
+            all_passed = false;
+            test_results.push((plan.to_string(), false));
+            continue;
+        }
+
+        // Ensure VM cleanup happens even on error
+        let cleanup_vm = || {
+            if let Err(e) = cmd!(sh, "bcvk libvirt rm --stop --force {vm_name}")
+                .ignore_stderr()
+                .ignore_status()
+                .run()
+            {
+                eprintln!("Warning: Failed to cleanup VM {}: {}", vm_name, e);
+            }
+        };
+
+        // Wait for VM to be ready and get SSH info
+        let vm_info = wait_for_vm_ready(sh, &vm_name);
+        let (ssh_port, ssh_key) = match vm_info {
+            Ok((port, key)) => (port, key),
+            Err(e) => {
+                eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false));
+                continue;
+            }
+        };
+
+        println!("VM ready, SSH port: {}", ssh_port);
+
+        // Save SSH private key to a temporary file
+        let key_file = tempfile::NamedTempFile::new()
+            .context("Creating temporary SSH key file");
+
+        let key_file = match key_file {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false));
+                continue;
+            }
+        };
+
+        let key_path = Utf8PathBuf::try_from(key_file.path().to_path_buf())
+            .context("Converting key path to UTF-8");
+
+        let key_path = match key_path {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false));
+                continue;
+            }
+        };
+
+        if let Err(e) = std::fs::write(&key_path, ssh_key) {
+            eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            all_passed = false;
+            test_results.push((plan.to_string(), false));
+            continue;
+        }
+
+        // Set proper permissions on the key file (SSH requires 0600)
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&key_path, perms) {
+                eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false));
+                continue;
+            }
+        }
+
+        // Verify SSH connectivity
+        println!("Verifying SSH connectivity...");
+        if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
+            eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            all_passed = false;
+            test_results.push((plan.to_string(), false));
+            continue;
+        }
+
+        println!("SSH connectivity verified");
+
+        let ssh_port_str = ssh_port.to_string();
+
+        // Run tmt for this specific plan using connect provisioner
+        println!("Running tmt tests for plan {}...", plan);
+
+        // Run tmt for this specific plan
+        // Note: provision must come before plan for connect to work properly
+        let test_result = cmd!(
+            sh,
+            "tmt --context running_env=image_mode run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts provision --how connect --guest localhost --port {ssh_port_str} --user root --key {key_path} plan --name {plan}"
+        )
+        .run();
+
+        // Clean up VM regardless of test result
+        cleanup_vm();
+
+        match test_result {
+            Ok(_) => {
+                println!("Plan {} completed successfully", plan);
+                test_results.push((plan.to_string(), true));
+            }
+            Err(e) => {
+                eprintln!("Plan {} failed: {:#}", plan, e);
+                all_passed = false;
+                test_results.push((plan.to_string(), false));
+            }
+        }
+    }
+
+    // Print summary
+    println!("\n========================================");
+    println!("Test Summary");
+    println!("========================================");
+    for (plan, passed) in &test_results {
+        let status = if *passed { "PASSED" } else { "FAILED" };
+        println!("{}: {}", plan, status);
+    }
+    println!("========================================\n");
+
+    if !all_passed {
+        anyhow::bail!("Some test plans failed");
+    }
+
+    Ok(())
+}
+
+fn print_help(_sh: &Shell, _args: &[String]) -> Result<()> {
     println!("Tasks:");
     for (name, _) in TASKS {
         println!("  - {name}");
