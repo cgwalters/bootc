@@ -867,11 +867,6 @@ fn prepare_for_write() -> Result<()> {
     if ENTERED.load(Ordering::SeqCst) {
         return Ok(());
     }
-    if ostree_ext::container_utils::is_ostree_container()? {
-        anyhow::bail!(
-            "Detected container (ostree base); this command requires a booted host system."
-        );
-    }
     if ostree_ext::container_utils::running_in_container() {
         anyhow::bail!("Detected container; this command requires a booted host system.");
     }
