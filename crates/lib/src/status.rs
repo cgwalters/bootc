@@ -18,11 +18,13 @@ use ostree_ext::sysroot::SysrootLock;
 
 use ostree_ext::ostree;
 
+use crate::cli::get_storage_unlocked;
 use crate::cli::OutputFormat;
 use crate::spec::BootEntryComposefs;
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
+use crate::store::BootedStorageKind;
 use crate::store::CachedImageStatus;
 
 impl From<ostree_container::SignatureSource> for ImageSignature {
@@ -367,15 +369,29 @@ pub(crate) fn get_status(
 }
 
 async fn get_host() -> Result<Host> {
-    let storage = super::cli::get_storage().await?;
-
-    let host = match storage.kind()? {
-        crate::store::BootedStorageKind::Ostree(booted_ostree) => {
-            let (_deployments, host) = get_status(&booted_ostree)?;
-            host
+    let storage = match get_storage_unlocked().await {
+        Ok(storage) => storage,
+        Err(_) => {
+            // If storage initialization fails (e.g., in container environments),
+            // return a default host indicating the system is not deployed via bootc
+            return Ok(Host::default());
         }
-        crate::store::BootedStorageKind::Composefs(booted_cfs) => {
-            crate::bootc_composefs::status::get_composefs_status(&storage, &booted_cfs).await?
+    };
+
+    let host = match storage.kind() {
+        Ok(kind) => match kind {
+            BootedStorageKind::Ostree(booted_ostree) => {
+                let (_deployments, host) = get_status(&booted_ostree)?;
+                host
+            }
+            BootedStorageKind::Composefs(booted_cfs) => {
+                crate::bootc_composefs::status::get_composefs_status(&storage, &booted_cfs).await?
+            }
+        },
+        Err(_) => {
+            // If determining storage kind fails (e.g., no booted deployment),
+            // return a default host indicating the system is not deployed via bootc
+            Host::default()
         }
     };
 

@@ -109,7 +109,7 @@ impl BootedStorage {
     ///
     /// This detects whether the system is booted via composefs or ostree
     /// and initializes the appropriate storage backend.
-    pub(crate) async fn new() -> Result<Self> {
+    pub(crate) async fn new(prep_for_write: bool) -> Result<Self> {
         let physical_root = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
             .context("Opening /sysroot")?;
 
@@ -134,7 +134,9 @@ impl BootedStorage {
             return Ok(Self { storage });
         }
 
-        prepare_for_write()?;
+        if prep_for_write {
+            prepare_for_write()?;
+        }
 
         let sysroot = ostree::Sysroot::new_default();
         sysroot.set_mount_namespace_in_use();

@@ -715,7 +715,15 @@ pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
 /// Load global storage state, expecting that we're booted into a bootc system.
 #[context("Initializing storage")]
 pub(crate) async fn get_storage() -> Result<crate::store::BootedStorage> {
-    BootedStorage::new().await
+    BootedStorage::new(true).await
+}
+
+/// Load global storage state, but do not internally call `prepare_for_write` for ostree booted
+/// systems
+/// We do this to keep the `bootc status` output unchanged
+#[context("Initializing locked storage")]
+pub(crate) async fn get_storage_unlocked() -> Result<crate::store::BootedStorage> {
+    BootedStorage::new(false).await
 }
 
 #[context("Querying root privilege")]
