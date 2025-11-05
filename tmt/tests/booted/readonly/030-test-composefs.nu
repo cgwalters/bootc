@@ -7,14 +7,16 @@ tap begin "composefs integration smoke test"
 let st = bootc status --json | from json
 let is_composefs = ($st.status.booted.composefs? != null)
 
-if not $is_composefs {
+if $is_composefs {
+    # When already on composefs, we can only test read-only operations
+    print "# TODO composefs: skipping pull test - cfs oci pull requires write access to sysroot"
+    bootc internals cfs --help
+} else {
     # When not on composefs, run the full test including initialization
     bootc internals test-composefs
+    bootc internals cfs --help
+    bootc internals cfs oci pull docker://busybox busybox
+    test -L /sysroot/composefs/streams/refs/busybox
 }
-
-# These tests work on both composefs and non-composefs systems
-bootc internals cfs --help
-bootc internals cfs oci pull docker://busybox busybox
-test -L /sysroot/composefs/streams/refs/busybox
 
 tap ok
