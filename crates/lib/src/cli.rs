@@ -8,7 +8,7 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::sync::Arc;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
@@ -24,7 +24,6 @@ use ostree_ext::composefs::fsverity;
 use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::composefs::splitstream::SplitStreamWriter;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::containers_image_proxy::ImageProxyConfig;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
@@ -713,17 +712,14 @@ pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
 }
 
 /// Load global storage state, expecting that we're booted into a bootc system.
+/// This prepares the process for write operations (re-exec, mount namespace, etc).
 #[context("Initializing storage")]
 pub(crate) async fn get_storage() -> Result<crate::store::BootedStorage> {
-    BootedStorage::new(true).await
-}
-
-/// Load global storage state, but do not internally call `prepare_for_write` for ostree booted
-/// systems
-/// We do this to keep the `bootc status` output unchanged
-#[context("Initializing locked storage")]
-pub(crate) async fn get_storage_unlocked() -> Result<crate::store::BootedStorage> {
-    BootedStorage::new(false).await
+    prepare_for_write()?;
+    let r = BootedStorage::new()
+        .await?
+        .ok_or_else(|| anyhow!("System not booted via bootc"))?;
+    Ok(r)
 }
 
 #[context("Querying root privilege")]

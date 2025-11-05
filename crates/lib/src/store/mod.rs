@@ -26,12 +26,12 @@ use cap_std_ext::cap_std::fs::{Dir, DirBuilder, DirBuilderExt as _};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
+use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
 use crate::bootc_composefs::status::{composefs_booted, ComposefsCmdline};
-use crate::cli::prepare_for_write;
 use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::ImageStatus;
@@ -109,14 +109,18 @@ impl BootedStorage {
     ///
     /// This detects whether the system is booted via composefs or ostree
     /// and initializes the appropriate storage backend.
-    pub(crate) async fn new(prep_for_write: bool) -> Result<Self> {
+    ///
+    /// Note: For write operations, callers should call `prepare_for_write()`
+    /// before calling this function to ensure the process is in the correct
+    /// mount namespace.
+    pub(crate) async fn new() -> Result<Option<Self>> {
         let physical_root = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
             .context("Opening /sysroot")?;
 
         let run =
             Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
 
-        if let Some(cmdline) = composefs_booted()? {
+        let r = if let Some(cmdline) = composefs_booted()? {
             let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
             if cmdline.insecure {
                 composefs.set_insecure(true);
@@ -131,27 +135,26 @@ impl BootedStorage {
                 imgstore: Default::default(),
             };
 
-            return Ok(Self { storage });
-        }
+            Some(Self { storage })
+        } else if ostree_booted()? {
+            let sysroot = ostree::Sysroot::new_default();
+            sysroot.set_mount_namespace_in_use();
+            let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
+            sysroot.load(gio::Cancellable::NONE)?;
 
-        if prep_for_write {
-            prepare_for_write()?;
-        }
+            let storage = Storage {
+                physical_root,
+                run,
+                ostree: OnceCell::from(sysroot),
+                composefs: Default::default(),
+                imgstore: Default::default(),
+            };
 
-        let sysroot = ostree::Sysroot::new_default();
-        sysroot.set_mount_namespace_in_use();
-        let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
-        sysroot.load(gio::Cancellable::NONE)?;
-
-        let storage = Storage {
-            physical_root,
-            run,
-            ostree: OnceCell::from(sysroot),
-            composefs: Default::default(),
-            imgstore: Default::default(),
+            Some(Self { storage })
+        } else {
+            None
         };
-
-        Ok(Self { storage })
+        Ok(r)
     }
 
     /// Determine the boot storage backend kind.
