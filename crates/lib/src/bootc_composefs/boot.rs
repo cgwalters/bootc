@@ -178,7 +178,7 @@ pub fn get_sysroot_parent_dev() -> Result<String> {
         anyhow::bail!("Could not find parent device for mountpoint /sysroot");
     };
 
-    return Ok(parent);
+    Ok(parent)
 }
 
 pub fn type1_entry_conf_file_name(sort_key: impl std::fmt::Display) -> String {
@@ -211,7 +211,7 @@ fn compute_boot_digest(
 
     let digest: &[u8] = &hasher.finish().context("Finishing digest")?;
 
-    return Ok(hex::encode(digest));
+    Ok(hex::encode(digest))
 }
 
 /// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum

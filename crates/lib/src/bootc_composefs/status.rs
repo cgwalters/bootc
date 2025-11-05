@@ -126,7 +126,7 @@ pub(crate) fn get_sorted_type1_boot_entries(
 
     all_configs.sort_by(|a, b| if ascending { a.cmp(b) } else { b.cmp(a) });
 
-    return Ok(all_configs);
+    Ok(all_configs)
 }
 
 /// imgref = transport:image_name
@@ -244,7 +244,7 @@ async fn boot_entry_from_composefs_deployment(
         soft_reboot_capable: false,
     };
 
-    return Ok(e);
+    Ok(e)
 }
 
 #[context("Getting composefs deployment status")]
