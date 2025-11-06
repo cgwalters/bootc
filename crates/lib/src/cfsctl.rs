@@ -1,11 +1,13 @@
 use std::{
     ffi::OsString,
-    fs::create_dir_all,
+    fs::{create_dir_all, File},
+    io::BufWriter,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
 use rustix::fs::CWD;
@@ -13,6 +15,7 @@ use rustix::fs::CWD;
 use composefs_boot::{write_boot, BootOps};
 
 use composefs::{
+    dumpfile,
     fsverity::{FsVerityHashValue, Sha512HashValue},
     repository::Repository,
 };
@@ -130,6 +133,9 @@ enum Command {
     },
     ComputeId {
         path: PathBuf,
+        /// Write the dumpfile to the provided target
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
         #[clap(long)]
         bootable: bool,
         #[clap(long)]
@@ -308,6 +314,7 @@ where
         },
         Command::ComputeId {
             ref path,
+            write_dumpfile_to,
             bootable,
             stat_root,
         } => {
@@ -317,6 +324,12 @@ where
             }
             let id = fs.compute_image_id();
             println!("{}", id.to_hex());
+            if let Some(path) = write_dumpfile_to.as_deref() {
+                let mut w = File::create(path)
+                    .with_context(|| format!("Opening {path}"))
+                    .map(BufWriter::new)?;
+                dumpfile::write_dumpfile(&mut w, &fs).context("Writing dumpfile")?;
+            }
         }
         Command::CreateImage {
             ref path,

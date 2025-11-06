@@ -3,7 +3,8 @@
 //! Command line tool to manage bootable ostree-based containers.
 
 use std::ffi::{CString, OsStr, OsString};
-use std::io::Seek;
+use std::fs::File;
+use std::io::{BufWriter, Seek};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use clap::Parser;
 use clap::ValueEnum;
+use composefs::dumpfile;
 use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
@@ -329,6 +331,10 @@ pub(crate) enum ContainerOpts {
     /// Output the bootable composefs digest.
     #[clap(hide = true)]
     ComputeComposefsDigest {
+        /// Additionally generate a dumpfile written to the target path
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
+
         /// Identifier for image; if not provided, the running image will be used.
         image: Option<String>,
     },
@@ -1365,7 +1371,10 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 )?;
                 Ok(())
             }
-            ContainerOpts::ComputeComposefsDigest { image } => {
+            ContainerOpts::ComputeComposefsDigest {
+                write_dumpfile_to,
+                image,
+            } => {
                 // Allocate a tempdir
                 let td = tempdir_in("/var/tmp")?;
                 let td = td.path();
@@ -1411,6 +1420,13 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 fs.transform_for_boot(&repo).context("Preparing for boot")?;
                 let id = fs.compute_image_id();
                 println!("{}", id.to_hex());
+
+                if let Some(path) = write_dumpfile_to.as_deref() {
+                    let mut w = File::create(path)
+                        .with_context(|| format!("Opening {path}"))
+                        .map(BufWriter::new)?;
+                    dumpfile::write_dumpfile(&mut w, &fs).context("Writing dumpfile")?;
+                }
 
                 Ok(())
             }
