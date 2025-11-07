@@ -4,6 +4,13 @@ set -xeu
 # using it in our test suite because it's better than bash. First,
 # enable EPEL to get it.
 
+cloudinit=0
+case ${1:-} in
+  cloudinit) cloudinit=1 ;;
+  "") ;;
+  *) echo "Unhandled flag: ${1:-}" 1>&2; exit 1 ;;
+esac
+
 # Ensure this is pre-created
 mkdir -p -m 0700 /var/roothome
 mkdir -p ~/.config/nushell
@@ -39,25 +46,23 @@ esac
 
 # Extra packages we install
 grep -Ev -e '^#' packages.txt | xargs dnf -y install
-dnf clean all
 
 # Cloud bits
 cat <<KARGEOF >> /usr/lib/bootc/kargs.d/20-console.toml
 kargs = ["console=ttyS0,115200n8"]
 KARGEOF
-# And cloud-init stuff, unless we're doing a UKI which is always
-# tested with bcvk
-if test '!' -d /boot/EFI; then
+if test $cloudinit = 1; then
+  dnf -y install cloud-init
   ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
-fi
-
-# Allow root SSH login for testing with bcvk/tmt
+  # Allow root SSH login for testing with bcvk/tmt
 mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/80-enable-root.cfg <<'CLOUDEOF'
 # Enable root login for testing
 disable_root: false
 CLOUDEOF
+fi
 
+dnf clean all
 # Stock extra cleaning of logs and caches in general (mostly dnf)
 rm /var/log/* /var/cache /var/lib/{dnf,rpm-state,rhsm} -rf
 # And clean root's homedir

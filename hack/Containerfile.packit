@@ -29,7 +29,7 @@ cp test-artifacts.repo /etc/yum.repos.d/
 dnf -y update bootc
 # Required by tmt avc checking after test
 dnf -y install audit
-./provision-derived.sh
+./provision-derived.sh cloudinit
 
 # For test-22-logically-bound-install
 cp -a lbi/usr/. /usr

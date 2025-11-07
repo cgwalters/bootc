@@ -856,11 +856,7 @@ pub(crate) fn setup_composefs_uki_boot(
 ) -> Result<()> {
     let (root_path, esp_device, bootloader, is_insecure_from_opts, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, ..)) => {
-            if let Some(v) = &state.config_opts.karg {
-                if v.len() > 0 {
-                    tracing::warn!("kargs passed for UKI will be ignored");
-                }
-            }
+            state.require_no_kargs_for_uki()?;
 
             let esp_part = esp_in(&root_setup.device_info)?;
 

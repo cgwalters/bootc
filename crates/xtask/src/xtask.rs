@@ -531,9 +531,6 @@ fn check_dependencies(sh: &Shell) -> Result<()> {
 }
 
 const COMMON_INST_ARGS: &[&str] = &[
-    // We don't use cloud-init with bcvk right now, but it needs to be there for
-    // testing-farm+tmt
-    "--karg=ds=iid-datasource-none",
     // TODO: Pass down the Secure Boot keys for tests if present
     "--firmware=uefi-insecure",
     "--label=bootc.test=1",

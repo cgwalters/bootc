@@ -523,6 +523,20 @@ impl State {
         Ok(())
     }
 
+    /// Return an error if kernel arguments are provided, intended to be used for UKI paths
+    pub(crate) fn require_no_kargs_for_uki(&self) -> Result<()> {
+        if self
+            .config_opts
+            .karg
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or_default()
+        {
+            anyhow::bail!("Cannot use externally specified kernel arguments with UKI");
+        }
+        Ok(())
+    }
+
     fn stateroot(&self) -> &str {
         self.config_opts
             .stateroot
