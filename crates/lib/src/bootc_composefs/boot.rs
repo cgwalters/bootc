@@ -588,7 +588,7 @@ fn write_pe_to_esp(
     file: &RegularFile<Sha512HashValue>,
     file_path: &Utf8Path,
     pe_type: PEType,
-    uki_id: &String,
+    uki_id: &Sha512HashValue,
     is_insecure_from_opts: bool,
     mounted_efi: impl AsRef<Path>,
     bootloader: &Bootloader,
@@ -619,7 +619,7 @@ fn write_pe_to_esp(
             _ => { /* no-op */ }
         }
 
-        if composefs_cmdline.to_hex() != *uki_id {
+        if composefs_cmdline != *uki_id {
             anyhow::bail!(
                 "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {uki_id:?})"
             );
@@ -648,7 +648,7 @@ fn write_pe_to_esp(
         Some(parent) => {
             let renamed_path = match parent.as_str().ends_with(EFI_ADDON_DIR_EXT) {
                 true => {
-                    let dir_name = format!("{}{}", uki_id, EFI_ADDON_DIR_EXT);
+                    let dir_name = format!("{}{}", uki_id.to_hex(), EFI_ADDON_DIR_EXT);
 
                     parent
                         .parent()
@@ -672,7 +672,7 @@ fn write_pe_to_esp(
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
     let pe_name = match pe_type {
-        PEType::Uki => &format!("{}{}", uki_id, EFI_EXT),
+        PEType::Uki => &format!("{}{}", uki_id.to_hex(), EFI_EXT),
         PEType::UkiAddon => file_path
             .components()
             .last()
@@ -932,7 +932,7 @@ pub(crate) fn setup_composefs_uki_boot(
                     &entry.file,
                     utf8_file_path,
                     entry.pe_type,
-                    &id.to_hex(),
+                    &id,
                     is_insecure_from_opts,
                     esp_mount.dir.path(),
                     &bootloader,
