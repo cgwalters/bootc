@@ -10,6 +10,7 @@ name: CI
 
 permissions:
   actions: read
+  packages: write
 
 on:
   push:
@@ -23,6 +24,7 @@ env:
   # Something seems to be setting this in the default GHA runners, which breaks bcvk
   # as the default runner user doesn't have access
   LIBVIRT_DEFAULT_URI: "qemu:///session"
+  DEV_IMAGE: ghcr.io/bootc-dev/dev-bootc
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -156,6 +158,21 @@ jobs:
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-ostree-${{ env.ARCH }}
           path: /var/tmp/tmt
+
+      - name: Login to ghcr.io
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push container image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          podman tag localhost/bootc ${{ env.DEV_IMAGE }}:${{ matrix.test_os }}
+          podman push ${{ env.DEV_IMAGE }}:${{ matrix.test_os }}
+
   # This variant does composefs testing
   test-integration-cfs:
     strategy:
@@ -200,6 +217,20 @@ jobs:
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-cfs-${{ env.ARCH }}
           path: /var/tmp/tmt
+
+      - name: Login to ghcr.io
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push container image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          podman tag localhost/bootc ${{ env.DEV_IMAGE }}:stream10-uki
+          podman push ${{ env.DEV_IMAGE }}:stream10-uki
 
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
