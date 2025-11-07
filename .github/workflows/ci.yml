@@ -200,3 +200,16 @@ jobs:
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-cfs-${{ env.ARCH }}
           path: /var/tmp/tmt
+
+  # Sentinel job for required checks - configure this job name in repository settings
+  required-checks:
+    if: always()
+    needs: [cargo-deny, validate, test-integration, test-integration-cfs]
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+        if: >-
+          needs.cargo-deny.result != 'success' ||
+          needs.validate.result != 'success' ||
+          needs.test-integration.result != 'success' ||
+          needs.test-integration-cfs.result != 'success'
