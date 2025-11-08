@@ -16,18 +16,20 @@
 variant := env("BOOTC_variant", "ostree")
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 
+testimage_label := "bootc.testimage=1"
+base_buildargs := "--jobs 4 --label=" + testimage_label
 buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
 
 # Build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
 build:
-    podman build --jobs=4 -t localhost/bootc-bin {{buildargs}} .
+    podman build {{base_buildargs}} -t localhost/bootc-bin {{buildargs}} .
     ./tests/build-sealed {{variant}} localhost/bootc-bin localhost/bootc
 
 # This container image has additional testing content and utilities
 build-integration-test-image: build
-    cd hack && podman build --jobs=4 -t localhost/bootc-integration-bin {{buildargs}} -f Containerfile .
+    cd hack && podman build {{base_buildargs}} -t localhost/bootc-integration-bin {{buildargs}} -f Containerfile .
     ./tests/build-sealed {{variant}} localhost/bootc-integration-bin localhost/bootc-integration
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
@@ -43,7 +45,7 @@ test-composefs:
 
 # Only used by ci.yml right now
 build-install-test-image: build-integration-test-image
-    cd hack && podman build -t localhost/bootc-integration-install -f Containerfile.drop-lbis
+    cd hack && podman build {{base_buildargs}} -t localhost/bootc-integration-install -f Containerfile.drop-lbis
 
 build-disk-image container target:
     bcvk to-disk --format=qcow2 --disk-size 20G --filesystem ext4 {{container}} {{target}}
@@ -54,11 +56,11 @@ run-container-external-tests:
 
 # We build the unit tests into a container image
 build-units:
-    podman build --jobs=4 --target units -t localhost/bootc-units .
+    podman build {{base_buildargs}} --target units -t localhost/bootc-units .
 
 # Perform validation (build, linting) in a container build environment
 validate:
-    podman build --jobs=4 --target validate .
+    podman build {{base_buildargs}} --target validate .
 
 # Directly run validation (build, linting) using host tools
 validate-local:
@@ -86,12 +88,17 @@ test-container: build-units build-integration-test-image
     # Pass these through for cross-checking
     podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} localhost/bootc-integration bootc-integration-tests container
 
+# Remove all container images built (locally) via this Justfile, by matching a label
+clean-local-images:
+    podman images --filter "label={{testimage_label}}"
+    podman images --filter "label={{testimage_label}}" --format "{{{{.ID}}" | xargs -r podman rmi -f
+
 # Print the container image reference for a given short $ID-VERSION_ID
 pullspec-for-os NAME:
     @jq -r --arg v "{{NAME}}" '.[$v]' < hack/os-image-map.json
 
 build-mdbook:
-    cd docs && podman build -t localhost/bootc-mdbook -f Dockerfile.mdbook
+    cd docs && podman build {{base_buildargs}} -t localhost/bootc-mdbook -f Dockerfile.mdbook
 
 # Generate the rendered HTML to the target DIR directory
 build-mdbook-to DIR: build-mdbook
