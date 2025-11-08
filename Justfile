@@ -47,9 +47,6 @@ test-composefs:
 build-install-test-image: build-integration-test-image
     cd hack && podman build {{base_buildargs}} -t localhost/bootc-integration-install -f Containerfile.drop-lbis
 
-build-disk-image container target:
-    bcvk to-disk --format=qcow2 --disk-size 20G --filesystem ext4 {{container}} {{target}}
-
 # These tests accept the container image as input, and may spawn it.
 run-container-external-tests:
    ./tests/container/run localhost/bootc
@@ -61,14 +58,6 @@ build-units:
 # Perform validation (build, linting) in a container build environment
 validate:
     podman build {{base_buildargs}} --target validate .
-
-# Directly run validation (build, linting) using host tools
-validate-local:
-    make validate
-
-# This generates a disk image (using bcvk) from the default container
-build-disk *ARGS:
-    ./tests/build.sh {{ARGS}}
 
 # Run tmt-based test suites using local virtual machines with
 # bcvk.
