@@ -38,8 +38,8 @@ test-composefs:
     # runs an integration test binary in the base image via bcvk
     just variant=composefs-sealeduki-sdboot build
     cargo run --release -p tests-integration -- composefs-bcvk localhost/bootc
-    # We're trying to move more testing to tmt, so 
-    just variant=composefs-sealeduki-sdboot test-tmt readonly
+    # Run all tmt tests (known failures are skipped via adjust+ in tmt/plans/integration.fmf)
+    just variant=composefs-sealeduki-sdboot test-tmt
 
 # Only used by ci.yml right now
 build-install-test-image: build-integration-test-image
@@ -74,7 +74,7 @@ build-disk *ARGS:
 # To run an individual test, pass it as an argument like:
 # `just test-tmt readonly`
 test-tmt *ARGS: build-integration-test-image
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} localhost/bootc-integration {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --context=variant={{variant}} localhost/bootc-integration {{ARGS}}
 
 # Cleanup all test VMs created by tmt tests
 tmt-vm-cleanup:

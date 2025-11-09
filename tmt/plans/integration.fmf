@@ -48,6 +48,10 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-20-local-upgrade
+  adjust+:
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: copy-to-storage requires OSTree storage which is not initialized in composefs variant
 
 /test-21-logically-bound-switch:
   summary: Execute logically bound images tests for switching images
@@ -55,6 +59,10 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-21-logically-bound-switch
+  adjust+:
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: bootc switch requires OSTree storage which is not initialized in composefs variant
 
 /test-22-logically-bound-install:
   summary: Execute logically bound images tests for switching images
@@ -62,6 +70,10 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-22-logically-bound-install
+  adjust+:
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: requires access to /usr/lib/bootc/storage (OSTree storage) which is not available in composefs variant
 
 /test-23-install-outside-container:
   summary: Execute tests for installing outside of a container
@@ -76,6 +88,10 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-24-local-upgrade-reboot
+  adjust+:
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: copy-to-storage requires OSTree storage which is not initialized in composefs variant
 
 /test-25-soft-reboot:
   summary: Soft reboot support
@@ -83,6 +99,10 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-25-soft-reboot
+  adjust+:
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: copy-to-storage requires OSTree storage which is not initialized in composefs variant
 
 /test-26-examples-build:
   summary: Test bootc examples build scripts
@@ -90,10 +110,13 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-26-examples-build
-  adjust:
+  adjust+:
     - when: running_env != image_mode
       enabled: false
       because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: Filesystem does not support fs-verity for composefs operations
 
 /test-27-custom-selinux-policy:
   summary: Execute restorecon test on system with custom selinux policy
@@ -101,10 +124,13 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-27-custom-selinux-policy
-  adjust:
+  adjust+:
     - when: running_env != image_mode
       enabled: false
       because: tmt-reboot does not work with systemd reboot in testing farm environment (see bug-soft-reboot.md)
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: copy-to-storage requires OSTree storage which is not initialized in composefs variant
 
 /test-28-factory-reset:
   summary: Factory reset
@@ -112,3 +138,7 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-28-factory-reset
+  adjust+:
+    - when: variant == composefs-sealeduki-sdboot
+      enabled: false
+      because: bootc install reset requires OSTree storage which is not initialized in composefs variant

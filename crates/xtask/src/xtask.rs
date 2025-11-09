@@ -536,6 +536,117 @@ const COMMON_INST_ARGS: &[&str] = &[
     "--label=bootc.test=1",
 ];
 
+/// Find the latest tmt run directory
+#[context("Finding latest tmt run directory")]
+fn find_latest_tmt_run() -> Result<Option<Utf8PathBuf>> {
+    let tmt_base = Utf8Path::new("/var/tmp/tmt");
+    if !tmt_base.exists() {
+        return Ok(None);
+    }
+
+    let mut runs: Vec<_> = std::fs::read_dir(tmt_base)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .map(|n| n.starts_with("run-"))
+                .unwrap_or(false)
+        })
+        .filter_map(|e| {
+            let path = e.path();
+            let metadata = std::fs::metadata(&path).ok()?;
+            Some((Utf8PathBuf::try_from(path).ok()?, metadata.modified().ok()?))
+        })
+        .collect();
+
+    runs.sort_by_key(|(_, mtime)| *mtime);
+
+    Ok(runs.last().map(|(path, _)| path.clone()))
+}
+
+/// Extract useful failure information from tmt logs
+#[context("Scraping tmt logs")]
+fn scrape_tmt_logs(run_dir: &Utf8Path) -> Result<()> {
+    use owo_colors::OwoColorize;
+
+    println!("\n{}", "=".repeat(60).bright_yellow());
+    println!(
+        "{}",
+        "Detailed failure information from tmt logs:".bright_yellow()
+    );
+    println!("{}", "=".repeat(60).bright_yellow());
+
+    // Find all execute/results.yaml files
+    let plans_dir = run_dir.join("tmt/plans");
+    if !plans_dir.exists() {
+        return Ok(());
+    }
+
+    let mut found_failures = false;
+
+    for plan_entry in std::fs::read_dir(&plans_dir)? {
+        let plan_entry = plan_entry?;
+        let plan_path = plan_entry.path();
+        let plan_name = plan_entry.file_name();
+
+        let results_path = plan_path.join("execute/results.yaml");
+        if !results_path.exists() {
+            continue;
+        }
+
+        // Parse results.yaml to find failed tests
+        let results_content = std::fs::read_to_string(&results_path)?;
+        let results: serde_yaml::Value = serde_yaml::from_str(&results_content)?;
+
+        if let Some(tests) = results.as_sequence() {
+            for test in tests {
+                if let Some(result) = test.get("result").and_then(|r| r.as_str()) {
+                    if result != "pass" {
+                        found_failures = true;
+                        let test_name = test
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown");
+
+                        println!("\n{} {}", "Plan:".bright_red(), plan_name.to_string_lossy());
+                        println!("{} {}", "Test:".bright_red(), test_name);
+                        println!("{} {}", "Result:".bright_red(), result.red());
+
+                        // Try to find and display the output
+                        if let Some(logs) = test.get("log").and_then(|l| l.as_sequence()) {
+                            for log in logs {
+                                if let Some(log_path) = log.as_str() {
+                                    if log_path.ends_with("output.txt") {
+                                        let full_log_path = plan_path.join(log_path);
+                                        if let Ok(output) = std::fs::read_to_string(&full_log_path)
+                                        {
+                                            println!("\n{}", "Test output (last 50 lines):".yellow());
+                                            let lines: Vec<&str> = output.lines().collect();
+                                            let start = lines.len().saturating_sub(50);
+                                            for line in &lines[start..] {
+                                                println!("{}", line);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        println!("{}", "-".repeat(60).bright_black());
+                    }
+                }
+            }
+        }
+    }
+
+    if !found_failures {
+        println!("No detailed failure information found in tmt results.");
+    }
+
+    println!("{}\n", "=".repeat(60).bright_yellow());
+    Ok(())
+}
+
 /// Run TMT tests using bcvk for VM management
 /// This spawns a separate VM per test plan to avoid state leakage between tests.
 #[context("Running TMT tests")]
@@ -601,7 +712,65 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("Found {} test plan(s): {:?}", plans.len(), plans);
+    // Check which plans are actually enabled with the current context
+    // Plans can be disabled via adjust+ directives in .fmf files
+    let mut enabled_plans = Vec::new();
+    let mut skipped_plans = Vec::new();
+
+    for plan in &plans {
+        let ctx = &context;
+        let show_output = cmd!(sh, "tmt {ctx...} plan show {plan}")
+            .read()
+            .with_context(|| format!("Checking if plan {} is enabled", plan))?;
+
+        // Parse the output to check if the plan is enabled
+        // Look for "enabled false" in the output
+        let is_enabled = !show_output.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == "enabled false"
+        });
+
+        if is_enabled {
+            enabled_plans.push(*plan);
+        } else {
+            skipped_plans.push(*plan);
+        }
+    }
+
+    // Report skipped plans
+    if !skipped_plans.is_empty() {
+        use owo_colors::OwoColorize;
+        println!(
+            "\n{} {} plan(s) disabled by adjust+ directives:",
+            "Note:".bright_yellow(),
+            skipped_plans.len()
+        );
+        for plan in &skipped_plans {
+            println!("  {} {}", "↳".bright_yellow(), plan.yellow());
+        }
+        println!(
+            "{} Check tmt/plans/integration.fmf for adjust+ conditions\n",
+            "Hint:".bright_cyan()
+        );
+    }
+
+    if enabled_plans.is_empty() {
+        use owo_colors::OwoColorize;
+        println!(
+            "{} All {} selected plan(s) are disabled for the current context",
+            "Info:".bright_cyan(),
+            plans.len()
+        );
+        if !skipped_plans.is_empty() {
+            println!(
+                "{} Run 'tmt plan show <plan>' to see why plans are disabled",
+                "Tip:".bright_cyan()
+            );
+        }
+        return Ok(());
+    }
+
+    println!("Running {} enabled plan(s): {:?}", enabled_plans.len(), enabled_plans);
 
     // Generate a random suffix for VM names
     let random_suffix = generate_random_suffix();
@@ -610,8 +779,8 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     let mut all_passed = true;
     let mut test_results = Vec::new();
 
-    // Run each plan in its own VM
-    for plan in plans {
+    // Run each enabled plan in its own VM
+    for plan in enabled_plans {
         let plan_name = sanitize_plan_name(plan);
         let vm_name = format!("bootc-tmt-{}-{}", random_suffix, plan_name);
 
@@ -792,6 +961,31 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("========================================\n");
 
     if !all_passed {
+        // Print tip about where to find logs
+        use owo_colors::OwoColorize;
+        println!(
+            "\n{} Test failures detected. Detailed logs can be found in {}",
+            "Tip:".bright_cyan(),
+            "/var/tmp/tmt/run-*".bright_cyan()
+        );
+
+        // Try to scrape and display useful failure information
+        if let Ok(Some(latest_run)) = find_latest_tmt_run() {
+            println!(
+                "{} Latest tmt run directory: {}",
+                "Info:".bright_cyan(),
+                latest_run.as_str().bright_cyan()
+            );
+
+            if let Err(e) = scrape_tmt_logs(&latest_run) {
+                eprintln!(
+                    "{} Failed to scrape tmt logs: {:#}",
+                    "Warning:".yellow(),
+                    e
+                );
+            }
+        }
+
         anyhow::bail!("Some test plans failed");
     }
 
