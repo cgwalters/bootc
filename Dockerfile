@@ -72,9 +72,6 @@ FROM base
 ARG variant
 RUN <<EORUN
 set -xeuo pipefail
-# Ensure we've flushed out prior state (i.e. files no longer shipped from the old version);
-# and yes, we may need to go to building an RPM in this Dockerfile by default.
-rm -vf /usr/lib/systemd/system/multi-user.target.wants/bootc-*
 case "${variant}" in
   *-sdboot)
     dnf -y install systemd-boot-unsigned
@@ -123,6 +120,10 @@ type = "${fs}"
 EOF
   fi
 fi
+
+# Ensure we've flushed out prior state (i.e. files no longer shipped from the old version);
+# and yes, we may need to go to building an RPM in this Dockerfile by default.
+(set +x; rpm -ql bootc | while read line; do if test -f $line; then rm -v $line; fi; done)
 EORUN
 # Create a layer that is our new binaries
 COPY --from=build /out/ /

@@ -65,6 +65,12 @@ install:
 	# Copy dracut and systemd config files
 	cp -Prf baseimage/dracut $(DESTDIR)$(prefix)/share/doc/bootc/baseimage/dracut
 	cp -Prf baseimage/systemd $(DESTDIR)$(prefix)/share/doc/bootc/baseimage/systemd
+	# Install fedora-bootc-destructive-cleanup in fedora derivatives
+	ID=$$(. /usr/lib/os-release && echo $$ID); \
+	ID_LIKE=$$(. /usr/lib/os-release && echo $$ID_LIKE); \
+	if [ "$$ID" = "fedora" ] || [[ "$$ID_LIKE" == *"fedora"* ]]; then \
+	install -D -m 0755 -t $(DESTDIR)/$(prefix)/lib/bootc contrib/scripts/fedora-bootc-destructive-cleanup; \
+	fi
 
 # Run this to also take over the functionality of `ostree container` for example.
 # Only needed for OS/distros that have callers invoking `ostree container` and not bootc.
