@@ -36,6 +36,7 @@ use crate::composefs_consts::{
 use crate::spec::Bootloader;
 
 /// A parsed composefs command line
+#[derive(Clone)]
 pub(crate) struct ComposefsCmdline {
     #[allow(dead_code)]
     pub insecure: bool,

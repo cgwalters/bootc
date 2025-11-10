@@ -97,6 +97,43 @@ pub struct BootedComposefs {
 
 /// Discriminated union representing the boot storage backend.
 ///
+/// The runtime environment in which bootc is executing.
+pub(crate) enum Environment {
+    /// System booted via ostree
+    OstreeBooted,
+    /// System booted via composefs
+    ComposefsBooted(ComposefsCmdline),
+    /// Running in a container
+    Container,
+    /// Other (not booted via bootc)
+    Other,
+}
+
+impl Environment {
+    /// Detect the current runtime environment.
+    pub(crate) fn detect() -> Result<Self> {
+        if ostree_ext::container_utils::running_in_container() {
+            return Ok(Self::Container);
+        }
+
+        if let Some(cmdline) = composefs_booted()? {
+            return Ok(Self::ComposefsBooted(cmdline.clone()));
+        }
+
+        if ostree_booted()? {
+            return Ok(Self::OstreeBooted);
+        }
+
+        Ok(Self::Other)
+    }
+
+    /// Returns true if this environment requires entering a mount namespace
+    /// before loading storage (to avoid leaving /sysroot writable).
+    pub(crate) fn needs_mount_namespace(&self) -> bool {
+        matches!(self, Self::OstreeBooted | Self::ComposefsBooted(_))
+    }
+}
+
 /// A system can boot via either ostree or composefs; this enum
 /// allows code to handle both cases while maintaining type safety.
 pub(crate) enum BootedStorageKind<'a> {
@@ -105,54 +142,58 @@ pub(crate) enum BootedStorageKind<'a> {
 }
 
 impl BootedStorage {
-    /// Create a new booted storage accessor.
+    /// Create a new booted storage accessor for the given environment.
     ///
-    /// This detects whether the system is booted via composefs or ostree
-    /// and initializes the appropriate storage backend.
-    ///
-    /// Note: For write operations, callers should call `prepare_for_write()`
-    /// before calling this function to ensure the process is in the correct
-    /// mount namespace.
-    pub(crate) async fn new() -> Result<Option<Self>> {
+    /// The caller must have already called `prepare_for_write()` if
+    /// `env.needs_mount_namespace()` is true.
+    pub(crate) async fn new(env: Environment) -> Result<Option<Self>> {
         let physical_root = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
             .context("Opening /sysroot")?;
 
         let run =
             Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
 
-        let r = if let Some(cmdline) = composefs_booted()? {
-            let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
-            if cmdline.insecure {
-                composefs.set_insecure(true);
+        let r = match env {
+            Environment::ComposefsBooted(cmdline) => {
+                let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
+                if cmdline.insecure {
+                    composefs.set_insecure(true);
+                }
+                let composefs = Arc::new(composefs);
+
+                let storage = Storage {
+                    physical_root,
+                    run,
+                    ostree: Default::default(),
+                    composefs: OnceCell::from(composefs),
+                    imgstore: Default::default(),
+                };
+
+                Some(Self { storage })
             }
-            let composefs = Arc::new(composefs);
+            Environment::OstreeBooted => {
+                // The caller must have entered a private mount namespace before
+                // calling this function. This is because ostree's sysroot.load() will
+                // remount /sysroot as writable, and we call set_mount_namespace_in_use()
+                // to indicate we're in a mount namespace. Without actually being in a
+                // mount namespace, this would leave the global /sysroot writable.
 
-            let storage = Storage {
-                physical_root,
-                run,
-                ostree: Default::default(),
-                composefs: OnceCell::from(composefs),
-                imgstore: Default::default(),
-            };
+                let sysroot = ostree::Sysroot::new_default();
+                sysroot.set_mount_namespace_in_use();
+                let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
+                sysroot.load(gio::Cancellable::NONE)?;
 
-            Some(Self { storage })
-        } else if ostree_booted()? {
-            let sysroot = ostree::Sysroot::new_default();
-            sysroot.set_mount_namespace_in_use();
-            let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
-            sysroot.load(gio::Cancellable::NONE)?;
+                let storage = Storage {
+                    physical_root,
+                    run,
+                    ostree: OnceCell::from(sysroot),
+                    composefs: Default::default(),
+                    imgstore: Default::default(),
+                };
 
-            let storage = Storage {
-                physical_root,
-                run,
-                ostree: OnceCell::from(sysroot),
-                composefs: Default::default(),
-                imgstore: Default::default(),
-            };
-
-            Some(Self { storage })
-        } else {
-            None
+                Some(Self { storage })
+            }
+            Environment::Container | Environment::Other => None,
         };
         Ok(r)
     }

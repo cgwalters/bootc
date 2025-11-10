@@ -369,7 +369,12 @@ pub(crate) fn get_status(
 }
 
 async fn get_host() -> Result<Host> {
-    let Some(storage) = BootedStorage::new().await? else {
+    let env = crate::store::Environment::detect()?;
+    if env.needs_mount_namespace() {
+        crate::cli::prepare_for_write()?;
+    }
+
+    let Some(storage) = BootedStorage::new(env).await? else {
         // If we're not booted, then return a default.
         return Ok(Host::default());
     };

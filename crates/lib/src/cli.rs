@@ -721,8 +721,11 @@ pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
 /// This prepares the process for write operations (re-exec, mount namespace, etc).
 #[context("Initializing storage")]
 pub(crate) async fn get_storage() -> Result<crate::store::BootedStorage> {
+    let env = crate::store::Environment::detect()?;
+    // Always call prepare_for_write() for write operations - it checks
+    // for container, root privileges, mount namespace setup, etc.
     prepare_for_write()?;
-    let r = BootedStorage::new()
+    let r = BootedStorage::new(env)
         .await?
         .ok_or_else(|| anyhow!("System not booted via bootc"))?;
     Ok(r)
