@@ -680,7 +680,9 @@ pub(crate) enum Opt {
     Internals(InternalsOpts),
     ComposefsFinalizeStaged,
     /// Diff current /etc configuration versus default
+    #[clap(hide = true)]
     ConfigDiff,
+    #[clap(hide = true)]
     DeleteDeployment {
         depl_id: String,
     },
