@@ -35,7 +35,7 @@ use crate::bootc_composefs::status::{composefs_booted, ComposefsCmdline};
 use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::ImageStatus;
-use crate::utils::deployment_fd;
+use crate::utils::{deployment_fd, open_dir_remount_rw};
 
 /// See https://github.com/containers/composefs-rs/issues/159
 pub type ComposefsRepository =
@@ -147,13 +147,21 @@ impl BootedStorage {
     /// The caller must have already called `prepare_for_write()` if
     /// `env.needs_mount_namespace()` is true.
     pub(crate) async fn new(env: Environment) -> Result<Option<Self>> {
-        let physical_root = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
-            .context("Opening /sysroot")?;
+        let physical_root = {
+            let d = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
+                .context("Opening /sysroot")?;
+            // Remount /sysroot rw only if we are in a new mount ns
+            if env.needs_mount_namespace() {
+                open_dir_remount_rw(&d, ".".into())?
+            } else {
+                d
+            }
+        };
 
         let run =
             Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
 
-        let r = match env {
+        let r = match &env {
             Environment::ComposefsBooted(cmdline) => {
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.insecure {
