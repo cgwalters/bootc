@@ -13,7 +13,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand};
 use fn_error_context::context;
 use rand::Rng;
-use serde::Deserialize;
 use xshell::{cmd, Shell};
 
 mod man;
@@ -296,15 +295,6 @@ fn spec(sh: &Shell) -> Result<()> {
     println!("Generated: {s}");
     Ok(())
 }
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-#[serde(rename_all = "PascalCase")]
-struct ImageInspect {
-    pub id: String,
-    pub digest: String,
-}
-
 fn impl_srpm(sh: &Shell) -> Result<Utf8PathBuf> {
     {
         let _g = sh.push_dir("target");
