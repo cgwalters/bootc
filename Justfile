@@ -17,7 +17,7 @@ variant := env("BOOTC_variant", "ostree")
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 
 testimage_label := "bootc.testimage=1"
-base_buildargs := "--jobs 4 --label=" + testimage_label
+base_buildargs := "--jobs 4"
 buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
 
 # Build the container image from current sources.
