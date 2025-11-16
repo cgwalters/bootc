@@ -36,6 +36,30 @@ build:
     podman build {{base_buildargs}} -t localhost/bootc-bin {{buildargs}} .
     ./tests/build-sealed {{variant}} localhost/bootc-bin localhost/bootc
 
+# Build packages (e.g. RPM) using a container buildroot
+_packagecontainer:
+    #!/bin/bash
+    set -xeuo pipefail
+    # Compute version from git (matching xtask.rs gitrev logic)
+    if VERSION=$(git describe --tags --exact-match 2>/dev/null); then
+        VERSION="${VERSION#v}"
+        VERSION="${VERSION//-/.}"
+    else
+        COMMIT=$(git rev-parse HEAD | cut -c1-10)
+        COMMIT_TS=$(git show -s --format=%ct)
+        TIMESTAMP=$(date -u -d @${COMMIT_TS} +%Y%m%d%H%M)
+        VERSION="${TIMESTAMP}.g${COMMIT}"
+    fi
+    echo "Building RPM with version: ${VERSION}"
+    podman build {{base_buildargs}} {{buildargs}} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
+
+# Build a packages (e.g. RPM) into target/
+# Any old packages will be removed.
+package: _packagecontainer
+    mkdir -p target
+    rm -vf target/*.rpm
+    podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C target/ -xvf -
+
 # This container image has additional testing content and utilities
 build-integration-test-image: build
     cd hack && podman build {{base_buildargs}} -t localhost/bootc-integration-bin -f Containerfile .

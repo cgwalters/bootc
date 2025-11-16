@@ -8,6 +8,9 @@
 # Toplevel build bits
 !Makefile
 !Cargo.*
+# License and doc files needed for RPM
+!LICENSE-*
+!README.md
 # We do build manpages from markdown
 !docs/
 # We use the spec file

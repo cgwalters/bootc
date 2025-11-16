@@ -1,0 +1,24 @@
+#!/bin/bash
+# Install bootc RPM and perform post-installation setup
+set -xeuo pipefail
+
+RPM_DIR="${1:-/tmp}"
+
+# Install the RPM package
+# Use rpm -Uvh with --oldpackage to allow replacing with dev version
+rpm -Uvh --oldpackage "${RPM_DIR}"/*.rpm
+rm -f "${RPM_DIR}"/*.rpm
+
+# Regenerate initramfs if we have initramfs-setup
+if [ -x /usr/lib/bootc/initramfs-setup ]; then
+  kver=$(cd /usr/lib/modules && echo *)
+  env DRACUT_NO_XATTR=1 dracut -vf /usr/lib/modules/$kver/initramfs.img $kver
+fi
+
+# Only in this containerfile, inject a file which signifies
+# this comes from this development image. This can be used in
+# tests to know we're doing upstream CI.
+touch /usr/lib/.bootc-dev-stamp
+
+# Workaround for https://github.com/bootc-dev/bootc/issues/1546
+rm -rf /root/buildinfo
