@@ -17,7 +17,16 @@ variant := env("BOOTC_variant", "ostree")
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 
 testimage_label := "bootc.testimage=1"
-base_buildargs := "--jobs 4"
+# We used to have --jobs=4 here but sometimes that'd hit this
+# ```
+#   [2/3] STEP 2/2: RUN --mount=type=bind,from=context,target=/run/context <<EORUN (set -xeuo pipefail...)
+#   --> Using cache b068d42ac7491067cf5fafcaaf2f09d348e32bb752a22c85bbb87f266409554d
+#   --> b068d42ac749
+#   + cd /run/context/
+#   /bin/sh: line 3: cd: /run/context/: Permission denied
+# ```
+# TODO: Gather more info and file a buildah bug
+base_buildargs := ""
 buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
 
 # Build the container image from current sources.
