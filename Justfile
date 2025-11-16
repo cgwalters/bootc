@@ -29,7 +29,7 @@ build:
 
 # This container image has additional testing content and utilities
 build-integration-test-image: build
-    cd hack && podman build {{base_buildargs}} -t localhost/bootc-integration-bin {{buildargs}} -f Containerfile .
+    cd hack && podman build {{base_buildargs}} -t localhost/bootc-integration-bin -f Containerfile .
     ./tests/build-sealed {{variant}} localhost/bootc-integration-bin localhost/bootc-integration
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
