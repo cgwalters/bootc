@@ -125,7 +125,7 @@ export SYSTEM_REINSTALL_BOOTC_INSTALL_PODMAN_PATH=%{system_reinstall_bootc_insta
 # Container build: use cargo directly with cached dependencies
 export CARGO_HOME=/var/roothome/.cargo
 cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} \
-    --bin=bootc --bin=system-reinstall-bootc \
+    --bin=bootc --bin=system-reinstall-bootc --bin=bootc-initramfs-setup \
     %{?with_tests:--bin tests-integration}
 make manpages
 %else
@@ -200,6 +200,7 @@ fi
 %{_bindir}/bootc
 %{_prefix}/lib/bootc/
 %{_prefix}/lib/systemd/system-generators/*
+%{_prefix}/lib/dracut/modules.d/51bootc/
 %if %{with ostree_ext}
 %{_prefix}/libexec/libostree/ext/*
 %endif

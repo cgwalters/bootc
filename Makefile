@@ -67,6 +67,9 @@ install:
 	if [ "$$ID" = "fedora" ] || [[ "$$ID_LIKE" == *"fedora"* ]]; then \
 	install -D -m 0755 -t $(DESTDIR)/$(prefix)/lib/bootc contrib/scripts/fedora-bootc-destructive-cleanup; \
 	fi
+	install -D -m 0644 -t $(DESTDIR)/usr/lib/systemd/system crates/initramfs/*.service
+	install -D -m 0755 target/release/bootc-initramfs-setup $(DESTDIR)/usr/lib/bootc/initramfs-setup
+	install -D -m 0755 -t $(DESTDIR)/usr/lib/dracut/modules.d/51bootc crates/initramfs/dracut/module-setup.sh
 
 # Run this to also take over the functionality of `ostree container` for example.
 # Only needed for OS/distros that have callers invoking `ostree container` and not bootc.
@@ -75,16 +78,6 @@ install-ostree-hooks:
 	for x in ostree-container ostree-ima-sign ostree-provisional-repair; do \
 	  ln -sf ../../../bin/bootc $(DESTDIR)$(prefix)/libexec/libostree/ext/$$x; \
 	done
-
-# Install code in the initramfs, off by default except in builds from git main right now
-# Also the systemd unit hardcodes /usr so we give up the farce of supporting $(prefix)
-install-initramfs:
-	install -D -m 0644 -t $(DESTDIR)/usr/lib/systemd/system crates/initramfs/*.service
-	install -D -m 0755 target/release/bootc-initramfs-setup $(DESTDIR)/usr/lib/bootc/initramfs-setup
-
-# Install initramfs files, including dracut module
-install-initramfs-dracut: install-initramfs
-	install -D -m 0755 -t $(DESTDIR)/usr/lib/dracut/modules.d/51bootc crates/initramfs/dracut/module-setup.sh
 
 # Install the main binary, the ostree hooks, and the integration test suite.
 install-all: install install-ostree-hooks

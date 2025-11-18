@@ -3,7 +3,9 @@ installkernel() {
     instmods erofs overlay
 }
 check() {
-    require_binaries /usr/lib/bootc/initramfs-setup || return 1
+    # We are never installed by default; see 10-bootc-base.conf
+    # for how base images can opt in.
+    return 255
 }
 depends() {
     return 0

@@ -10,10 +10,11 @@ rpm -Uvh --oldpackage "${RPM_DIR}"/*.rpm
 rm -f "${RPM_DIR}"/*.rpm
 
 # Regenerate initramfs if we have initramfs-setup
-if [ -x /usr/lib/bootc/initramfs-setup ]; then
-  kver=$(cd /usr/lib/modules && echo *)
-  env DRACUT_NO_XATTR=1 dracut -vf /usr/lib/modules/$kver/initramfs.img $kver
-fi
+kver=$(cd /usr/lib/modules && echo *)
+# DRACUT_NO_XATTR=1 is the default in newer base images, and
+# we have --add bootc here until the change to add the module in base
+# images lands.
+env DRACUT_NO_XATTR=1 dracut --add bootc -vf /usr/lib/modules/$kver/initramfs.img $kver
 
 # Only in this containerfile, inject a file which signifies
 # this comes from this development image. This can be used in
