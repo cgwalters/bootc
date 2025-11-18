@@ -25,10 +25,6 @@
 
 prefix ?= /usr
 
-SOURCE_DATE_EPOCH ?= $(shell git log -1 --pretty=%ct)
-# https://reproducible-builds.org/docs/archives/
-TAR_REPRODUCIBLE = tar --mtime="@${SOURCE_DATE_EPOCH}" --sort=name --owner=0 --group=0 --numeric-owner --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime
-
 # Enable rhsm if we detect the build environment is RHEL-like.
 # We may in the future also want to include Fedora+derivatives as
 # the code is really tiny.
@@ -93,9 +89,6 @@ install-initramfs-dracut: install-initramfs
 # Install the main binary, the ostree hooks, and the integration test suite.
 install-all: install install-ostree-hooks
 	install -D -m 0755 target/release/tests-integration $(DESTDIR)$(prefix)/bin/bootc-integration-tests
-
-bin-archive: all
-	$(MAKE) install DESTDIR=tmp-install && $(TAR_REPRODUCIBLE) --zstd -C tmp-install -cf target/bootc.tar.zst . && rm tmp-install -rf
 
 build-unit-tests:
 	cargo t --no-run
