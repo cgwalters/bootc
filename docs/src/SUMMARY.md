@@ -64,6 +64,7 @@
 
 # More information
 
+- [Packaging and integration](packaging-and-integration.md)
 - [Package manager integration](package-managers.md)
 - [Relationship with other projects](relationships.md)
 - [Relationship with OCI artifacs](relationship-oci-artifacts.md)
