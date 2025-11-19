@@ -35,87 +35,20 @@ prepare:
 execute:
   how: tmt
 
-/readonly-tests:
-  summary: Execute booted readonly/nondestructive tests
+# Regular tests (no special requirements)
+/all-tests:
+  summary: All integration tests
   discover:
     how: fmf
-    test:
-        - /tmt/tests/test-01-readonly
+    filter: tag:-image-mode-only
 
-/test-20-local-upgrade:
-  summary: Execute local upgrade tests
+# Image-mode-only tests
+/image-mode-tests:
+  summary: Tests requiring image mode
   discover:
     how: fmf
-    test:
-        - /tmt/tests/test-20-local-upgrade
-
-/test-21-logically-bound-switch:
-  summary: Execute logically bound images tests for switching images
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-21-logically-bound-switch
-
-/test-22-logically-bound-install:
-  summary: Execute logically bound images tests for switching images
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-22-logically-bound-install
-
-/test-23-install-outside-container:
-  summary: Execute tests for installing outside of a container
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-23-install-outside-container
-
-/test-24-local-upgrade-reboot:
-  summary: Execute local upgrade tests with automated reboot
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-24-local-upgrade-reboot
-
-/test-25-soft-reboot:
-  summary: Soft reboot support
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-25-soft-reboot
-
-/test-26-examples-build:
-  summary: Test bootc examples build scripts
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-26-examples-build
+    filter: tag:image-mode-only
   adjust:
     - when: running_env != image_mode
       enabled: false
-      because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
-
-/test-27-custom-selinux-policy:
-  summary: Execute restorecon test on system with custom selinux policy
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-27-custom-selinux-policy
-  adjust:
-    - when: running_env != image_mode
-      enabled: false
-      because: tmt-reboot does not work with systemd reboot in testing farm environment (see bug-soft-reboot.md)
-
-/test-23-usroverlay:
-  summary: Usroverlay
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-23-usroverlay
-
-/test-28-factory-reset:
-  summary: Factory reset
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-28-factory-reset
+      because: these tests require features only available in image mode

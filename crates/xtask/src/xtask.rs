@@ -491,18 +491,18 @@ fn generate_random_suffix() -> String {
         .collect()
 }
 
-/// Sanitize a plan name for use in a VM name
+/// Sanitize a name for use in a VM name
 /// Replaces non-alphanumeric characters (except - and _) with dashes
-/// Returns "plan" if the result would be empty
-fn sanitize_plan_name(plan: &str) -> String {
-    let sanitized = plan
+/// Returns "tmt" if the result would be empty
+fn sanitize_name(name: &str) -> String {
+    let sanitized = name
         .replace('/', "-")
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
         .trim_matches('-')
         .to_string();
 
     if sanitized.is_empty() {
-        "plan".to_string()
+        "tmt".to_string()
     } else {
         sanitized
     }
@@ -560,38 +560,38 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     // Change to workdir for running tmt commands
     let _dir = sh.push_dir(workdir);
 
-    // Get the list of plans
-    println!("Discovering test plans...");
-    let plans_output = cmd!(sh, "tmt plan ls")
+    // Get the list of tests
+    println!("Discovering tests...");
+    let tests_output = cmd!(sh, "tmt test ls")
         .read()
         .context("Getting list of test plans")?;
 
-    let mut plans: Vec<&str> = plans_output
+    let mut tests: Vec<&str> = tests_output
         .lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty() && line.starts_with("/"))
         .collect();
 
-    // Filter plans based on user arguments
+    // Filter tests based on user arguments
     if !filter_args.is_empty() {
-        let original_count = plans.len();
-        plans.retain(|plan| filter_args.iter().any(|arg| plan.contains(arg.as_str())));
-        if plans.len() < original_count {
+        let original_count = tests.len();
+        tests.retain(|t| filter_args.iter().any(|arg| t.contains(arg.as_str())));
+        if tests.len() < original_count {
             println!(
-                "Filtered from {} to {} plan(s) based on arguments: {:?}",
+                "Filtered from {} to {} test(s) based on arguments: {:?}",
                 original_count,
-                plans.len(),
+                tests.len(),
                 filter_args
             );
         }
     }
 
-    if plans.is_empty() {
-        println!("No test plans found");
+    if tests.is_empty() {
+        println!("No tests found");
         return Ok(());
     }
 
-    println!("Found {} test plan(s): {:?}", plans.len(), plans);
+    println!("Found {} test(s): {:?}", tests.len(), tests);
 
     // Generate a random suffix for VM names
     let random_suffix = generate_random_suffix();
@@ -600,18 +600,17 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     let mut all_passed = true;
     let mut test_results = Vec::new();
 
-    // Run each plan in its own VM
-    for plan in plans {
-        let plan_name = sanitize_plan_name(plan);
-        let vm_name = format!("bootc-tmt-{}-{}", random_suffix, plan_name);
+    // Run each test in its own VM
+    for test in tests {
+        let test_name = sanitize_name(test);
+        let vm_name = format!("bootc-tmt-{}-{}", random_suffix, test_name);
 
         println!("\n========================================");
-        println!("Running plan: {}", plan);
+        println!("Running test: {}", test);
         println!("VM name: {}", vm_name);
         println!("========================================\n");
 
         // Launch VM with bcvk
-
         let launch_result = cmd!(
             sh,
             "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {image}"
@@ -620,9 +619,9 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         .context("Launching VM with bcvk");
 
         if let Err(e) = launch_result {
-            eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
+            eprintln!("Failed to launch VM for test {test}: {e:#}");
             all_passed = false;
-            test_results.push((plan.to_string(), false));
+            test_results.push((test.to_string(), false));
             continue;
         }
 
@@ -645,10 +644,10 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let (ssh_port, ssh_key) = match vm_info {
             Ok((port, key)) => (port, key),
             Err(e) => {
-                eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
+                eprintln!("Failed to get VM info for plan {test}: {e:#}");
                 cleanup_vm();
                 all_passed = false;
-                test_results.push((plan.to_string(), false));
+                test_results.push((test.to_string(), false));
                 continue;
             }
         };
@@ -661,10 +660,10 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let key_file = match key_file {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
+                eprintln!("Failed to create SSH key file for plan {test}: {e:#}");
                 cleanup_vm();
                 all_passed = false;
-                test_results.push((plan.to_string(), false));
+                test_results.push((test.to_string(), false));
                 continue;
             }
         };
@@ -675,19 +674,19 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let key_path = match key_path {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
+                eprintln!("Failed to convert key path for test {test}: {e:#}");
                 cleanup_vm();
                 all_passed = false;
-                test_results.push((plan.to_string(), false));
+                test_results.push((test.to_string(), false));
                 continue;
             }
         };
 
         if let Err(e) = std::fs::write(&key_path, ssh_key) {
-            eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
+            eprintln!("Failed to write SSH key for test {test}: {e:#}");
             cleanup_vm();
             all_passed = false;
-            test_results.push((plan.to_string(), false));
+            test_results.push((test.to_string(), false));
             continue;
         }
 
@@ -696,10 +695,10 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
             if let Err(e) = std::fs::set_permissions(&key_path, perms) {
-                eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
+                eprintln!("Failed to set key permissions for test {test}: {e:#}");
                 cleanup_vm();
                 all_passed = false;
-                test_results.push((plan.to_string(), false));
+                test_results.push((test.to_string(), false));
                 continue;
             }
         }
@@ -707,10 +706,10 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         // Verify SSH connectivity
         println!("Verifying SSH connectivity...");
         if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
-            eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
+            eprintln!("SSH verification failed for test {test}: {e:#}");
             cleanup_vm();
             all_passed = false;
-            test_results.push((plan.to_string(), false));
+            test_results.push((test.to_string(), false));
             continue;
         }
 
@@ -718,16 +717,16 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
         let ssh_port_str = ssh_port.to_string();
 
-        // Run tmt for this specific plan using connect provisioner
-        println!("Running tmt tests for plan {}...", plan);
+        // Run tmt for this specific test using connect provisioner
+        println!("Running tmt test {}...", test);
 
-        // Run tmt for this specific plan
-        // Note: provision must come before plan for connect to work properly
+        // Run tmt for this specific test
+        // Note: provision must come before tests for connect to work properly
         let context = context.clone();
         let how = ["--how=connect", "--guest=localhost", "--user=root"];
         let test_result = cmd!(
             sh,
-            "tmt {context...} run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts provision {how...} --port {ssh_port_str} --key {key_path} plan --name {plan}"
+            "tmt {context...} run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts provision {how...} --port {ssh_port_str} --key {key_path} tests --name {test}"
         )
         .run();
 
@@ -736,13 +735,13 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
         match test_result {
             Ok(_) => {
-                println!("Plan {} completed successfully", plan);
-                test_results.push((plan.to_string(), true));
+                println!("Test {} completed successfully", test);
+                test_results.push((test.to_string(), true));
             }
             Err(e) => {
-                eprintln!("Plan {} failed: {:#}", plan, e);
+                eprintln!("Test {} failed: {:#}", test, e);
                 all_passed = false;
-                test_results.push((plan.to_string(), false));
+                test_results.push((test.to_string(), false));
             }
         }
 
@@ -775,14 +774,14 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("\n========================================");
     println!("Test Summary");
     println!("========================================");
-    for (plan, passed) in &test_results {
+    for (test_name, passed) in &test_results {
         let status = if *passed { "PASSED" } else { "FAILED" };
-        println!("{}: {}", plan, status);
+        println!("{}: {}", test_name, status);
     }
     println!("========================================\n");
 
     if !all_passed {
-        anyhow::bail!("Some test plans failed");
+        anyhow::bail!("Some tests failed");
     }
 
     Ok(())
