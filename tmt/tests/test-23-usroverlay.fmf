@@ -1,0 +1,3 @@
+summary: Execute tests for bootc usrover
+test: nu booted/test-usroverlay.nu
+duration: 30m

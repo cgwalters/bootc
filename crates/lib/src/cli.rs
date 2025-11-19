@@ -1336,10 +1336,12 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
         }
         Opt::Edit(opts) => edit(opts).await,
         Opt::UsrOverlay => {
-            let storage = &get_storage().await?;
-            match storage.kind()? {
-                BootedStorageKind::Ostree(_) => usroverlay().await,
-                BootedStorageKind::Composefs(_) => composefs_usr_overlay(),
+            use crate::store::Environment;
+            let env = Environment::detect()?;
+            match env {
+                Environment::OstreeBooted => usroverlay().await,
+                Environment::ComposefsBooted(_) => composefs_usr_overlay(),
+                _ => anyhow::bail!("usroverlay only applies on booted hosts"),
             }
         }
         Opt::Container(opts) => match opts {

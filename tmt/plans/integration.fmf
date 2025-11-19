@@ -106,6 +106,13 @@ execute:
       enabled: false
       because: tmt-reboot does not work with systemd reboot in testing farm environment (see bug-soft-reboot.md)
 
+/test-23-usroverlay:
+  summary: Usroverlay
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-23-usroverlay
+
 /test-28-factory-reset:
   summary: Factory reset
   discover:
