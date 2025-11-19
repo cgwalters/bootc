@@ -16,6 +16,7 @@ use rand::Rng;
 use xshell::{cmd, Shell};
 
 mod man;
+mod tmt;
 
 const NAME: &str = "bootc";
 const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
@@ -398,6 +399,9 @@ fn update_generated(sh: &Shell) -> Result<()> {
 
     // Update JSON schemas
     update_json_schemas(sh)?;
+
+    // Update TMT integration.fmf
+    tmt::update_integration()?;
 
     Ok(())
 }
