@@ -3,6 +3,7 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
+use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 
 use bootc_blockdev::{Partition, PartitionTable};
@@ -28,15 +29,12 @@ pub(crate) fn esp_in(device: &PartitionTable) -> Result<&Partition> {
 /// Determine if the invoking environment contains bootupd, and if there are bootupd-based
 /// updates in the target root.
 #[context("Querying for bootupd")]
-#[allow(dead_code)]
-pub(crate) fn supports_bootupd(deployment_path: Option<&str>) -> Result<bool> {
+pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     if !utils::have_executable("bootupctl")? {
         tracing::trace!("No bootupctl binary found");
         return Ok(false);
     };
-    let deployment_path = Utf8Path::new(deployment_path.unwrap_or("/"));
-    let updates = deployment_path.join(BOOTUPD_UPDATES);
-    let r = updates.try_exists()?;
+    let r = root.try_exists(BOOTUPD_UPDATES)?;
     tracing::trace!("bootupd updates: {r}");
     Ok(r)
 }

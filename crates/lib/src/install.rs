@@ -476,7 +476,11 @@ pub(crate) struct State {
 
     // If Some, then --composefs_native is passed
     pub(crate) composefs_options: InstallComposefsOpts,
+}
 
+// Shared read-only global state
+#[derive(Debug)]
+pub(crate) struct PostFetchState {
     /// Detected bootloader type for the target system
     pub(crate) detected_bootloader: crate::spec::Bootloader,
 }
@@ -1453,21 +1457,6 @@ async fn prepare_install(
         .map(|p| std::fs::read_to_string(p).with_context(|| format!("Reading {p}")))
         .transpose()?;
 
-    // Determine bootloader type for the target system
-    // Priority: user-specified > bootupd availability > systemd-boot fallback
-    let detected_bootloader = {
-        if let Some(bootloader) = composefs_options.bootloader.clone() {
-            bootloader
-        } else {
-            if crate::bootloader::supports_bootupd(None)? {
-                crate::spec::Bootloader::Grub
-            } else {
-                crate::spec::Bootloader::Systemd
-            }
-        }
-    };
-    println!("Bootloader: {detected_bootloader}");
-
     // Create our global (read-only) state which gets wrapped in an Arc
     // so we can pass it to worker threads too. Right now this just
     // combines our command line options along with some bind mounts from the host.
@@ -1483,11 +1472,33 @@ async fn prepare_install(
         tempdir,
         host_is_container,
         composefs_required,
-        detected_bootloader,
         composefs_options,
     });
 
     Ok(state)
+}
+
+impl PostFetchState {
+    pub(crate) fn new(state: &State, d: &Dir) -> Result<Self> {
+        // Determine bootloader type for the target system
+        // Priority: user-specified > bootupd availability > systemd-boot fallback
+        let detected_bootloader = {
+            if let Some(bootloader) = state.composefs_options.bootloader.clone() {
+                bootloader
+            } else {
+                if crate::bootloader::supports_bootupd(d)? {
+                    crate::spec::Bootloader::Grub
+                } else {
+                    crate::spec::Bootloader::Systemd
+                }
+            }
+        };
+        println!("Bootloader: {detected_bootloader}");
+        let r = Self {
+            detected_bootloader,
+        };
+        Ok(r)
+    }
 }
 
 /// Given a baseline root filesystem with an ostree sysroot initialized:
@@ -1513,11 +1524,17 @@ async fn install_with_sysroot(
 
     let deployment_path = ostree.deployment_dirpath(&deployment);
 
+    let deployment_dir = rootfs
+        .physical_root
+        .open_dir(&deployment_path)
+        .context("Opening deployment dir")?;
+    let postfetch = PostFetchState::new(state, &deployment_dir)?;
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
     } else {
-        match state.detected_bootloader {
+        match postfetch.detected_bootloader {
             Bootloader::Grub => {
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
@@ -1660,6 +1677,7 @@ async fn install_to_filesystem_impl(
 
         let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
         tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
+
         setup_composefs_boot(rootfs, state, &hex::encode(id))?;
     } else {
         ostree_install(state, rootfs, cleanup).await?;
