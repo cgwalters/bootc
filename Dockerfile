@@ -61,6 +61,8 @@ RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/config
 # Support overriding the rootfs at build time conveniently
 ARG rootfs=
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+# Inject additional content
+COPY --from=packaging /usr-extras/ /usr/
 # Install the RPM built in the build stage
 # This replaces the manual file deletion hack and COPY, ensuring proper package management
 # Use rpm -Uvh with --oldpackage to allow replacing with dev version
