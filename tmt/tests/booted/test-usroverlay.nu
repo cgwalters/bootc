@@ -1,6 +1,7 @@
 # Verify that bootc usroverlay works
 use std assert
 use tap.nu
+use bootc_testlib.nu
 
 bootc status
 
@@ -12,8 +13,8 @@ def initial_run [] {
     bootc usroverlay
     let is_writable = (do -i { /bin/test -w /usr } | complete | get exit_code) == 0
     assert ($is_writable)
-    
-    tmt-reboot
+
+    bootc_testlib reboot
 }
 
 # The second boot; verify we're in the derived image

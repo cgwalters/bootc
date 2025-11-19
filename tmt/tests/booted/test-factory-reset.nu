@@ -1,5 +1,6 @@
 use std assert
 use tap.nu
+use bootc_testlib.nu
 
 def initial_build [] {
     tap begin "factory reset test"
@@ -41,16 +42,7 @@ def initial_build [] {
     # nu's cp doesn't have -T
     /usr/bin/cp -r -T $workdir_root $"($new_stateroot_path)/($workdir_root)"
 
-    # Check reset status before reboot
-    RUST_LOG=trace bootc status
-
-    # Sometimes systemd daemons are still running old binaries and response "Access denied" when send reboot request
-    # Force a full sync before reboot
-    sync
-    # Allow more delay for bootc to settle
-    sleep 30sec
-
-    tmt-reboot
+    bootc_testlib reboot
 }
 
 # The second boot; verify we're in the factory reset deployment
