@@ -781,6 +781,7 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("========================================\n");
 
     if !all_passed {
+        cmd!(sh, "tmt run -l report -vvv").ignore_status().run()?;
         anyhow::bail!("Some tests failed");
     }
 
