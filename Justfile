@@ -78,14 +78,14 @@ build-integration-test-image: build
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
-# Build+test composefs; compat alias
+# Build+test using the `composefs-sealeduki-sdboot` variant.
 test-composefs:
     # These first two are currently a distinct test suite from tmt that directly
     # runs an integration test binary in the base image via bcvk
     just variant=composefs-sealeduki-sdboot build
     cargo run --release -p tests-integration -- composefs-bcvk {{base_img}}
-    # We're trying to move more testing to tmt, so 
-    just variant=composefs-sealeduki-sdboot test-tmt readonly
+    # We're trying to move more testing to tmt
+    just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
 
 # Only used by ci.yml right now
 build-install-test-image: build-integration-test-image
@@ -113,7 +113,7 @@ test-tmt *ARGS: build-integration-test-image _build-upgrade-image
 
 # Generate a local synthetic upgrade
 _build-upgrade-image:
-    podman build -t {{integration_upgrade_img}}-bin --from={{integration_img}}-bin -f tmt/tests/Dockerfile.upgrade /usr/share/empty
+    cat tmt/tests/Dockerfile.upgrade | podman build -t {{integration_upgrade_img}}-bin --from={{integration_img}}-bin -
     ./tests/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}}
 
 # Assume the localhost/bootc-integration image is up to date, and just run tests.
