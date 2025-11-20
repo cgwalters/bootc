@@ -102,6 +102,11 @@ validate:
 # To run an individual test, pass it as an argument like:
 # `just test-tmt readonly`
 test-tmt *ARGS: build-integration-test-image
+    @just test-tmt-nobuild {{ARGS}}
+
+# Assume the localhost/bootc-integration image is up to date, and just run tests.
+# Useful for iterating on tests quickly.
+test-tmt-nobuild *ARGS:
     cargo xtask run-tmt --env=BOOTC_variant={{variant}} localhost/bootc-integration {{ARGS}}
 
 # Cleanup all test VMs created by tmt tests
