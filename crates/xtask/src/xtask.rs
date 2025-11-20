@@ -727,6 +727,7 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let how = ["--how=connect", "--guest=localhost", "--user=root"];
         let env = ["TMT_SCRIPTS_DIR=/var/lib/tmt/scripts", "BCVK_EXPORT=1"]
             .into_iter()
+            .chain(args.env.iter().map(|v| v.as_str()))
             .flat_map(|v| ["--environment", v]);
         let test_result = cmd!(
             sh,
