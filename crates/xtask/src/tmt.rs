@@ -344,9 +344,13 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         // Note: provision must come before plan for connect to work properly
         let context = context.clone();
         let how = ["--how=connect", "--guest=localhost", "--user=root"];
+        let env = ["TMT_SCRIPTS_DIR=/var/lib/tmt/scripts", "BCVK_EXPORT=1"]
+            .into_iter()
+            .chain(args.env.iter().map(|v| v.as_str()))
+            .flat_map(|v| ["--environment", v]);
         let test_result = cmd!(
             sh,
-            "tmt {context...} run --id {run_id} --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts provision {how...} --port {ssh_port_str} --key {key_path} plan --name {plan}"
+            "tmt {context...} run --id {run_id} --all {env...} provision {how...} --port {ssh_port_str} --key {key_path} plan --name {plan}"
         )
         .run();
 
