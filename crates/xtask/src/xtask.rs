@@ -524,6 +524,7 @@ const COMMON_INST_ARGS: &[&str] = &[
     // TODO: Pass down the Secure Boot keys for tests if present
     "--firmware=uefi-insecure",
     "--label=bootc.test=1",
+    "--bind-storage-ro",
 ];
 
 /// Run TMT tests using bcvk for VM management
@@ -724,9 +725,12 @@ fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         // Note: provision must come before tests for connect to work properly
         let context = context.clone();
         let how = ["--how=connect", "--guest=localhost", "--user=root"];
+        let env = ["TMT_SCRIPTS_DIR=/var/lib/tmt/scripts", "BCVK_EXPORT=1"]
+            .into_iter()
+            .flat_map(|v| ["--environment", v]);
         let test_result = cmd!(
             sh,
-            "tmt {context...} run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts provision {how...} --port {ssh_port_str} --key {key_path} tests --name {test}"
+            "tmt {context...} run --all {env...} provision {how...} --port {ssh_port_str} --key {key_path} tests --name {test}"
         )
         .run();
 
@@ -813,7 +817,7 @@ fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     // Use ds=iid-datasource-none to disable cloud-init for faster boot
     cmd!(
         sh,
-        "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {image}"
+        "bcvk libvirt run --bind-storage-ro --name {vm_name} --detach {COMMON_INST_ARGS...} {image}"
     )
     .run()
     .context("Launching VM with bcvk")?;
