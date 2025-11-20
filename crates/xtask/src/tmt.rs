@@ -18,6 +18,7 @@ const COMMON_INST_ARGS: &[&str] = &[
     // TODO: Pass down the Secure Boot keys for tests if present
     "--firmware=uefi-insecure",
     "--label=bootc.test=1",
+    "--bind-storage-ro",
 ];
 
 // Import the argument types from xtask.rs
