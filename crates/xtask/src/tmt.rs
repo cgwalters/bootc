@@ -1,10 +1,533 @@
 use anyhow::{Context, Result};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
+use rand::Rng;
+use xshell::{cmd, Shell};
 
 // Generation markers for integration.fmf
 const PLAN_MARKER_BEGIN: &str = "# BEGIN GENERATED PLANS\n";
 const PLAN_MARKER_END: &str = "# END GENERATED PLANS\n";
+
+// VM and SSH connectivity timeouts for bcvk integration
+// Cloud-init can take 2-3 minutes to start SSH
+const VM_READY_TIMEOUT_SECS: u64 = 60;
+const SSH_CONNECTIVITY_MAX_ATTEMPTS: u32 = 60;
+const SSH_CONNECTIVITY_RETRY_DELAY_SECS: u64 = 3;
+
+const COMMON_INST_ARGS: &[&str] = &[
+    // TODO: Pass down the Secure Boot keys for tests if present
+    "--firmware=uefi-insecure",
+    "--label=bootc.test=1",
+];
+
+// Import the argument types from xtask.rs
+use crate::{RunTmtArgs, TmtProvisionArgs};
+
+/// Generate a random alphanumeric suffix for VM names
+fn generate_random_suffix() -> String {
+    let mut rng = rand::rng();
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    (0..8)
+        .map(|_| {
+            let idx = rng.random_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
+}
+
+/// Sanitize a plan name for use in a VM name
+/// Replaces non-alphanumeric characters (except - and _) with dashes
+/// Returns "plan" if the result would be empty
+fn sanitize_plan_name(plan: &str) -> String {
+    let sanitized = plan
+        .replace('/', "-")
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "plan".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// Check that required dependencies are available
+#[context("Checking dependencies")]
+fn check_dependencies(sh: &Shell) -> Result<()> {
+    for tool in ["bcvk", "tmt", "rsync"] {
+        cmd!(sh, "which {tool}")
+            .ignore_stdout()
+            .run()
+            .with_context(|| format!("{} is not available in PATH", tool))?;
+    }
+    Ok(())
+}
+
+/// Wait for a bcvk VM to be ready and return SSH connection info
+#[context("Waiting for VM to be ready")]
+fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
+    use std::thread;
+    use std::time::Duration;
+
+    for attempt in 1..=VM_READY_TIMEOUT_SECS {
+        if let Ok(json_output) = cmd!(sh, "bcvk libvirt inspect {vm_name} --format=json")
+            .ignore_stderr()
+            .read()
+        {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_output) {
+                if let (Some(ssh_port), Some(ssh_key)) = (
+                    json.get("ssh_port").and_then(|v| v.as_u64()),
+                    json.get("ssh_private_key").and_then(|v| v.as_str()),
+                ) {
+                    let ssh_port = ssh_port as u16;
+                    return Ok((ssh_port, ssh_key.to_string()));
+                }
+            }
+        }
+
+        if attempt < VM_READY_TIMEOUT_SECS {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    anyhow::bail!(
+        "VM {} did not become ready within {} seconds",
+        vm_name,
+        VM_READY_TIMEOUT_SECS
+    )
+}
+
+/// Verify SSH connectivity to the VM
+/// Uses a more complex command similar to what TMT runs to ensure full readiness
+#[context("Verifying SSH connectivity")]
+fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+
+    let port_str = port.to_string();
+    for attempt in 1..=SSH_CONNECTIVITY_MAX_ATTEMPTS {
+        // Test with a complex command like TMT uses (exports + whoami)
+        // Use IdentitiesOnly=yes to prevent ssh-agent from offering other keys
+        let result = cmd!(
+            sh,
+            "ssh -i {key_path} -p {port_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes root@localhost 'export TEST=value; whoami'"
+        )
+        .ignore_stderr()
+        .read();
+
+        match &result {
+            Ok(output) if output.trim() == "root" => {
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        if attempt % 10 == 0 {
+            println!(
+                "Waiting for SSH... attempt {}/{}",
+                attempt, SSH_CONNECTIVITY_MAX_ATTEMPTS
+            );
+        }
+
+        if attempt < SSH_CONNECTIVITY_MAX_ATTEMPTS {
+            thread::sleep(Duration::from_secs(SSH_CONNECTIVITY_RETRY_DELAY_SECS));
+        }
+    }
+
+    anyhow::bail!(
+        "SSH connectivity check failed after {} attempts",
+        SSH_CONNECTIVITY_MAX_ATTEMPTS
+    )
+}
+
+/// Run TMT tests using bcvk for VM management
+/// This spawns a separate VM per test plan to avoid state leakage between tests.
+#[context("Running TMT tests")]
+pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
+    // Check dependencies first
+    check_dependencies(sh)?;
+
+    let image = &args.image;
+    let filter_args = &args.filters;
+    let context = args
+        .context
+        .iter()
+        .map(|v| v.as_str())
+        .chain(std::iter::once("running_env=image_mode"))
+        .map(|v| format!("--context={v}"))
+        .collect::<Vec<_>>();
+    let preserve_vm = args.preserve_vm;
+
+    println!("Using bcvk image: {}", image);
+
+    // Create tmt-workdir and copy tmt bits to it
+    // This works around https://github.com/teemtee/tmt/issues/4062
+    let workdir = Utf8Path::new("target/tmt-workdir");
+    sh.create_dir(workdir)
+        .with_context(|| format!("Creating {}", workdir))?;
+
+    // rsync .fmf and tmt directories to workdir
+    cmd!(sh, "rsync -a --delete --force .fmf tmt {workdir}/")
+        .run()
+        .with_context(|| format!("Copying tmt files to {}", workdir))?;
+
+    // Change to workdir for running tmt commands
+    let _dir = sh.push_dir(workdir);
+
+    // Get the list of plans
+    println!("Discovering test plans...");
+    let plans_output = cmd!(sh, "tmt plan ls")
+        .read()
+        .context("Getting list of test plans")?;
+
+    let mut plans: Vec<&str> = plans_output
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && line.starts_with("/"))
+        .collect();
+
+    // Filter plans based on user arguments
+    if !filter_args.is_empty() {
+        let original_count = plans.len();
+        plans.retain(|plan| filter_args.iter().any(|arg| plan.contains(arg.as_str())));
+        if plans.len() < original_count {
+            println!(
+                "Filtered from {} to {} plan(s) based on arguments: {:?}",
+                original_count,
+                plans.len(),
+                filter_args
+            );
+        }
+    }
+
+    if plans.is_empty() {
+        println!("No test plans found");
+        return Ok(());
+    }
+
+    println!("Found {} test plan(s): {:?}", plans.len(), plans);
+
+    // Generate a random suffix for VM names
+    let random_suffix = generate_random_suffix();
+
+    // Track overall success/failure
+    let mut all_passed = true;
+    let mut test_results: Vec<(String, bool, Option<String>)> = Vec::new();
+
+    // Run each plan in its own VM
+    for plan in plans {
+        let plan_name = sanitize_plan_name(plan);
+        let vm_name = format!("bootc-tmt-{}-{}", random_suffix, plan_name);
+
+        println!("\n========================================");
+        println!("Running plan: {}", plan);
+        println!("VM name: {}", vm_name);
+        println!("========================================\n");
+
+        // Launch VM with bcvk
+
+        let launch_result = cmd!(
+            sh,
+            "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {image}"
+        )
+        .run()
+        .context("Launching VM with bcvk");
+
+        if let Err(e) = launch_result {
+            eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
+            all_passed = false;
+            test_results.push((plan.to_string(), false, None));
+            continue;
+        }
+
+        // Ensure VM cleanup happens even on error (unless --preserve-vm is set)
+        let cleanup_vm = || {
+            if preserve_vm {
+                return;
+            }
+            if let Err(e) = cmd!(sh, "bcvk libvirt rm --stop --force {vm_name}")
+                .ignore_stderr()
+                .ignore_status()
+                .run()
+            {
+                eprintln!("Warning: Failed to cleanup VM {}: {}", vm_name, e);
+            }
+        };
+
+        // Wait for VM to be ready and get SSH info
+        let vm_info = wait_for_vm_ready(sh, &vm_name);
+        let (ssh_port, ssh_key) = match vm_info {
+            Ok((port, key)) => (port, key),
+            Err(e) => {
+                eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false, None));
+                continue;
+            }
+        };
+
+        println!("VM ready, SSH port: {}", ssh_port);
+
+        // Save SSH private key to a temporary file
+        let key_file = tempfile::NamedTempFile::new().context("Creating temporary SSH key file");
+
+        let key_file = match key_file {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false, None));
+                continue;
+            }
+        };
+
+        let key_path = Utf8PathBuf::try_from(key_file.path().to_path_buf())
+            .context("Converting key path to UTF-8");
+
+        let key_path = match key_path {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false, None));
+                continue;
+            }
+        };
+
+        if let Err(e) = std::fs::write(&key_path, ssh_key) {
+            eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            all_passed = false;
+            test_results.push((plan.to_string(), false, None));
+            continue;
+        }
+
+        // Set proper permissions on the key file (SSH requires 0600)
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&key_path, perms) {
+                eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
+                cleanup_vm();
+                all_passed = false;
+                test_results.push((plan.to_string(), false, None));
+                continue;
+            }
+        }
+
+        // Verify SSH connectivity
+        println!("Verifying SSH connectivity...");
+        if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
+            eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            all_passed = false;
+            test_results.push((plan.to_string(), false, None));
+            continue;
+        }
+
+        println!("SSH connectivity verified");
+
+        let ssh_port_str = ssh_port.to_string();
+
+        // Run tmt for this specific plan using connect provisioner
+        println!("Running tmt tests for plan {}...", plan);
+
+        // Generate a unique run ID for this test
+        // Use the VM name which already contains a random suffix for uniqueness
+        let run_id = vm_name.clone();
+
+        // Run tmt for this specific plan
+        // Note: provision must come before plan for connect to work properly
+        let context = context.clone();
+        let how = ["--how=connect", "--guest=localhost", "--user=root"];
+        let test_result = cmd!(
+            sh,
+            "tmt {context...} run --id {run_id} --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts provision {how...} --port {ssh_port_str} --key {key_path} plan --name {plan}"
+        )
+        .run();
+
+        // Clean up VM regardless of test result (unless --preserve-vm is set)
+        cleanup_vm();
+
+        match test_result {
+            Ok(_) => {
+                println!("Plan {} completed successfully", plan);
+                test_results.push((plan.to_string(), true, Some(run_id)));
+            }
+            Err(e) => {
+                eprintln!("Plan {} failed: {:#}", plan, e);
+                all_passed = false;
+                test_results.push((plan.to_string(), false, Some(run_id)));
+            }
+        }
+
+        // Print VM connection details if preserving
+        if preserve_vm {
+            // Copy SSH key to a persistent location
+            let persistent_key_path = Utf8Path::new("target").join(format!("{}.ssh-key", vm_name));
+            if let Err(e) = std::fs::copy(&key_path, &persistent_key_path) {
+                eprintln!("Warning: Failed to save persistent SSH key: {}", e);
+            } else {
+                println!("\n========================================");
+                println!("VM preserved for debugging:");
+                println!("========================================");
+                println!("VM name: {}", vm_name);
+                println!("SSH port: {}", ssh_port_str);
+                println!("SSH key: {}", persistent_key_path);
+                println!("\nTo connect via SSH:");
+                println!(
+                    "  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost",
+                    persistent_key_path, ssh_port_str
+                );
+                println!("\nTo cleanup:");
+                println!("  bcvk libvirt rm --stop --force {}", vm_name);
+                println!("========================================\n");
+            }
+        }
+    }
+
+    // Print summary
+    println!("\n========================================");
+    println!("Test Summary");
+    println!("========================================");
+    for (plan, passed, _) in &test_results {
+        let status = if *passed { "PASSED" } else { "FAILED" };
+        println!("{}: {}", plan, status);
+    }
+    println!("========================================\n");
+
+    // Print detailed error reports for failed tests
+    let failed_tests: Vec<_> = test_results
+        .iter()
+        .filter(|(_, passed, _)| !passed)
+        .collect();
+
+    if !failed_tests.is_empty() {
+        println!("\n========================================");
+        println!("Detailed Error Reports");
+        println!("========================================\n");
+
+        for (plan, _, run_id) in failed_tests {
+            println!("----------------------------------------");
+            println!("Plan: {}", plan);
+            println!("----------------------------------------");
+
+            if let Some(id) = run_id {
+                println!("Run ID: {}\n", id);
+
+                // Run tmt with the specific run ID and generate verbose report
+                let report_result = cmd!(sh, "tmt run -i {id} report -vvv")
+                    .ignore_status()
+                    .run();
+
+                match report_result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to generate detailed report for {}: {:#}",
+                            plan, e
+                        );
+                    }
+                }
+            } else {
+                println!("Run ID not available - cannot generate detailed report");
+            }
+
+            println!("\n");
+        }
+
+        println!("========================================\n");
+    }
+
+    if !all_passed {
+        anyhow::bail!("Some test plans failed");
+    }
+
+    Ok(())
+}
+
+/// Provision a VM for manual tmt testing
+/// Wraps bcvk libvirt run and waits for SSH connectivity
+///
+/// Prints SSH connection details for use with tmt provision --how connect
+#[context("Provisioning VM for TMT")]
+pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
+    // Check for bcvk
+    if cmd!(sh, "which bcvk").ignore_status().read().is_err() {
+        anyhow::bail!("bcvk is not available in PATH");
+    }
+
+    let image = &args.image;
+    let vm_name = args
+        .vm_name
+        .clone()
+        .unwrap_or_else(|| format!("bootc-tmt-manual-{}", generate_random_suffix()));
+
+    println!("Provisioning VM...");
+    println!("  Image: {}", image);
+    println!("  VM name: {}\n", vm_name);
+
+    // Launch VM with bcvk
+    // Use ds=iid-datasource-none to disable cloud-init for faster boot
+    cmd!(
+        sh,
+        "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {image}"
+    )
+    .run()
+    .context("Launching VM with bcvk")?;
+
+    println!("VM launched, waiting for SSH...");
+
+    // Wait for VM to be ready and get SSH info
+    let (ssh_port, ssh_key) = wait_for_vm_ready(sh, &vm_name)?;
+
+    // Save SSH private key to target directory
+    let key_dir = Utf8Path::new("target");
+    sh.create_dir(key_dir)
+        .context("Creating target directory")?;
+    let key_path = key_dir.join(format!("{}.ssh-key", vm_name));
+
+    std::fs::write(&key_path, ssh_key).context("Writing SSH key file")?;
+
+    // Set proper permissions on key file (0600)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .context("Setting SSH key file permissions")?;
+    }
+
+    println!("SSH key saved to: {}", key_path);
+
+    // Verify SSH connectivity
+    verify_ssh_connectivity(sh, ssh_port, &key_path)?;
+
+    println!("\n========================================");
+    println!("VM provisioned successfully!");
+    println!("========================================");
+    println!("VM name: {}", vm_name);
+    println!("SSH port: {}", ssh_port);
+    println!("SSH key: {}", key_path);
+    println!("\nTo use with tmt:");
+    println!("  tmt run --all provision --how connect \\");
+    println!("    --guest localhost --port {} \\", ssh_port);
+    println!("    --user root --key {} \\", key_path);
+    println!("    plan --name <PLAN_NAME>");
+    println!("\nTo connect via SSH:");
+    println!(
+        "  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost",
+        key_path, ssh_port
+    );
+    println!("\nTo cleanup:");
+    println!("  bcvk libvirt rm --stop --force {}", vm_name);
+    println!("========================================\n");
+
+    Ok(())
+}
 
 /// Parse tmt metadata from a test file
 /// Looks for:
@@ -21,8 +544,11 @@ fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
 
         // Look for "# number: N" line
         if let Some(rest) = trimmed.strip_prefix("# number:") {
-            number = Some(rest.trim().parse::<u32>()
-                .context("Failed to parse number field")?);
+            number = Some(
+                rest.trim()
+                    .parse::<u32>()
+                    .context("Failed to parse number field")?,
+            );
             continue;
         }
 
@@ -100,8 +626,8 @@ pub(crate) fn update_integration() -> Result<()> {
             continue;
         };
 
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("Reading {}", filename))?;
+        let content =
+            std::fs::read_to_string(&path).with_context(|| format!("Reading {}", filename))?;
 
         let metadata = parse_tmt_metadata(&content)
             .with_context(|| format!("Parsing tmt metadata from {}", filename))?
@@ -146,44 +672,54 @@ pub(crate) fn update_integration() -> Result<()> {
     // Sort tests by number
     tests.sort_by_key(|t| t.number);
 
-    // Generate single tests.fmf file
+    // Generate single tests.fmf file using structured YAML
     let tests_dir = Utf8Path::new("tmt/tests");
     let tests_fmf_path = tests_dir.join("tests.fmf");
-    let mut tests_content = String::new();
 
-    // Add generated code marker
+    // Build YAML structure
+    let mut tests_mapping = serde_yaml::Mapping::new();
+    for test in &tests {
+        let test_key = format!("/test-{:02}-{}", test.number, test.name);
+
+        // Start with the extra metadata (summary, duration, adjust, etc.)
+        let mut test_value = if let serde_yaml::Value::Mapping(map) = &test.extra {
+            map.clone()
+        } else {
+            serde_yaml::Mapping::new()
+        };
+
+        // Add the test command (derived from file type, not in metadata)
+        test_value.insert(
+            serde_yaml::Value::String("test".to_string()),
+            serde_yaml::Value::String(test.test_command.clone()),
+        );
+
+        tests_mapping.insert(
+            serde_yaml::Value::String(test_key),
+            serde_yaml::Value::Mapping(test_value),
+        );
+    }
+
+    // Serialize to YAML
+    let tests_yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(tests_mapping))
+        .context("Serializing tests to YAML")?;
+
+    // Post-process YAML to add blank lines between tests for readability
+    let mut tests_yaml_formatted = String::new();
+    for line in tests_yaml.lines() {
+        if line.starts_with("/test-") && !tests_yaml_formatted.is_empty() {
+            tests_yaml_formatted.push('\n');
+        }
+        tests_yaml_formatted.push_str(line);
+        tests_yaml_formatted.push('\n');
+    }
+
+    // Build final content with header
+    let mut tests_content = String::new();
     tests_content.push_str("# THIS IS GENERATED CODE - DO NOT EDIT\n");
     tests_content.push_str("# Generated by: cargo xtask tmt\n");
     tests_content.push_str("\n");
-
-    for test in &tests {
-        tests_content.push_str(&format!("/test-{:02}-{}:\n", test.number, test.name));
-
-        // Serialize all fmf attributes from metadata (summary, duration, adjust, etc.)
-        if let serde_yaml::Value::Mapping(map) = &test.extra {
-            if !map.is_empty() {
-                let extra_yaml = serde_yaml::to_string(&test.extra)
-                    .context("Serializing extra metadata")?;
-                for line in extra_yaml.lines() {
-                    if !line.trim().is_empty() {
-                        tests_content.push_str(&format!("  {}\n", line));
-                    }
-                }
-            }
-        }
-
-        // Add the test command (derived from file type, not in metadata)
-        if test.test_command.contains('\n') {
-            tests_content.push_str("  test: |\n");
-            for line in test.test_command.lines() {
-                tests_content.push_str(&format!("    {}\n", line));
-            }
-        } else {
-            tests_content.push_str(&format!("  test: {}\n", test.test_command));
-        }
-
-        tests_content.push_str("\n");
-    }
+    tests_content.push_str(&tests_yaml_formatted);
 
     // Only write if content changed
     let needs_update = match std::fs::read_to_string(&tests_fmf_path) {
@@ -192,58 +728,93 @@ pub(crate) fn update_integration() -> Result<()> {
     };
 
     if needs_update {
-        std::fs::write(&tests_fmf_path, tests_content)
-            .context("Writing tests.fmf")?;
+        std::fs::write(&tests_fmf_path, tests_content).context("Writing tests.fmf")?;
         println!("Generated {}", tests_fmf_path);
     } else {
         println!("Unchanged: {}", tests_fmf_path);
     }
 
-    // Generate plans section (at root level, no indentation)
-    let mut plans_section = String::new();
+    // Generate plans section using structured YAML
+    let mut plans_mapping = serde_yaml::Mapping::new();
     for test in &tests {
-        plans_section.push_str(&format!("/plan-{:02}-{}:\n", test.number, test.name));
+        let plan_key = format!("/plan-{:02}-{}", test.number, test.name);
+        let mut plan_value = serde_yaml::Mapping::new();
 
         // Extract summary from extra metadata
         if let serde_yaml::Value::Mapping(map) = &test.extra {
             if let Some(summary) = map.get(&serde_yaml::Value::String("summary".to_string())) {
-                if let Some(summary_str) = summary.as_str() {
-                    plans_section.push_str(&format!("  summary: {}\n", summary_str));
-                }
+                plan_value.insert(
+                    serde_yaml::Value::String("summary".to_string()),
+                    summary.clone(),
+                );
             }
         }
 
-        plans_section.push_str("  discover:\n");
-        plans_section.push_str("    how: fmf\n");
-        plans_section.push_str("    test:\n");
-        plans_section.push_str(&format!("      - /tmt/tests/tests/test-{:02}-{}\n", test.number, test.name));
+        // Build discover section
+        let mut discover = serde_yaml::Mapping::new();
+        discover.insert(
+            serde_yaml::Value::String("how".to_string()),
+            serde_yaml::Value::String("fmf".to_string()),
+        );
+        let test_path = format!("/tmt/tests/tests/test-{:02}-{}", test.number, test.name);
+        discover.insert(
+            serde_yaml::Value::String("test".to_string()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(test_path)]),
+        );
+        plan_value.insert(
+            serde_yaml::Value::String("discover".to_string()),
+            serde_yaml::Value::Mapping(discover),
+        );
 
-        // Extract and serialize adjust section if present
+        // Extract and add adjust section if present
         if let serde_yaml::Value::Mapping(map) = &test.extra {
             if let Some(adjust) = map.get(&serde_yaml::Value::String("adjust".to_string())) {
-                let adjust_yaml = serde_yaml::to_string(adjust)
-                    .context("Serializing adjust metadata")?;
-                plans_section.push_str("  adjust:\n");
-                for line in adjust_yaml.lines() {
-                    if !line.trim().is_empty() {
-                        plans_section.push_str(&format!("  {}\n", line));
-                    }
-                }
+                plan_value.insert(
+                    serde_yaml::Value::String("adjust".to_string()),
+                    adjust.clone(),
+                );
             }
         }
 
-        plans_section.push_str("\n");
+        plans_mapping.insert(
+            serde_yaml::Value::String(plan_key),
+            serde_yaml::Value::Mapping(plan_value),
+        );
+    }
+
+    // Serialize plans to YAML
+    let plans_yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(plans_mapping))
+        .context("Serializing plans to YAML")?;
+
+    // Post-process YAML to add blank lines between plans for readability
+    // and fix indentation for test list items
+    let mut plans_section = String::new();
+    for line in plans_yaml.lines() {
+        if line.starts_with("/plan-") && !plans_section.is_empty() {
+            plans_section.push('\n');
+        }
+        // Fix indentation: YAML serializer uses 2-space indent for list items,
+        // but we want them at 6 spaces (4 for discover + 2 for test)
+        if line.starts_with("    - /tmt/tests/") {
+            plans_section.push_str("      ");
+            plans_section.push_str(line.trim_start());
+        } else {
+            plans_section.push_str(line);
+        }
+        plans_section.push('\n');
     }
 
     // Update integration.fmf with generated plans
     let output_path = Utf8Path::new("tmt/plans/integration.fmf");
-    let existing_content = std::fs::read_to_string(output_path)
-        .context("Reading integration.fmf")?;
+    let existing_content =
+        std::fs::read_to_string(output_path).context("Reading integration.fmf")?;
 
     // Replace plans section
-    let (before_plans, rest) = existing_content.split_once(PLAN_MARKER_BEGIN)
+    let (before_plans, rest) = existing_content
+        .split_once(PLAN_MARKER_BEGIN)
         .context("Missing # BEGIN GENERATED PLANS marker in integration.fmf")?;
-    let (_old_plans, after_plans) = rest.split_once(PLAN_MARKER_END)
+    let (_old_plans, after_plans) = rest
+        .split_once(PLAN_MARKER_END)
         .context("Missing # END GENERATED PLANS marker in integration.fmf")?;
 
     let new_content = format!(
@@ -289,7 +860,9 @@ use tap.nu
         let extra = metadata.extra.as_mapping().unwrap();
         assert_eq!(
             extra.get(&serde_yaml::Value::String("summary".to_string())),
-            Some(&serde_yaml::Value::String("Execute booted readonly/nondestructive tests".to_string()))
+            Some(&serde_yaml::Value::String(
+                "Execute booted readonly/nondestructive tests".to_string()
+            ))
         );
         assert_eq!(
             extra.get(&serde_yaml::Value::String("duration".to_string())),
