@@ -166,6 +166,11 @@ an `/etc/hostname` into the target root. At the current time, bootc does
 not offer a direct API to do this. However, the backend for bootc is
 ostree, and it is possible to enumerate the deployments via ostree APIs.
 
+You can use `ostree admin --sysroot=/path/to/target --print-current-dir` to
+find the newly created deployment directory. For detailed examples and usage,
+see the [Injecting configuration before first boot](#before-reboot-injecting-new-configuration)
+section under `to-existing-root` documentation below.
+
 We hope to provide a bootc-supported method to find the deployment in
 the future.
 
@@ -216,9 +221,9 @@ It is assumed in this command that the target rootfs is pased via `-v /:/target`
 
 As noted above, the data in `/boot` will be wiped, but everything else in the existing
 operating `/` is **NOT** automatically cleaned up.  This can
-be useful, because it allows the new image to automatically import data from the previous
-host system!  For example, container images, database, user home directory data, config
-files in `/etc` are all available after the subsequent reboot in `/sysroot` (which
+be useful, because it allows the new image to access data from the previous
+host system.  For example, container images, database, user home directory data, and
+config files in `/etc` are all available after the subsequent reboot in `/sysroot` (which
 is the "physical root").
 
 However, previous mount points or subvolumes will not be automatically
@@ -226,12 +231,96 @@ mounted in the new system, e.g. a btrfs subvolume for /home will not be automati
 /sysroot/home. These filesystems will persist and can be handled any way you want like manually
 mounting them or defining the mount points as part of the bootc image.
 
-A special case of this trick is using the `--root-ssh-authorized-keys` flag to inherit
-root's SSH keys (which may have been injected from e.g. cloud instance userdata
-via a tool like `cloud-init`).  To do this, just add
-`--root-ssh-authorized-keys /target/root/.ssh/authorized_keys`
-to the above.
+#### Managing configuration: before and after reboot
 
+There are two distinct scenarios for managing configuration with `to-existing-root`:
+
+**Before rebooting (injecting new configuration):** You can inject new configuration
+files into the newly installed deployment before the first boot. This is useful for
+adding custom `/etc/fstab` entries, systemd mount units, or other fresh configuration
+that the new system should have from the start.
+
+**After rebooting (migrating old configuration):** You can copy or migrate configuration
+and data from the old system (now accessible at `/sysroot`) to the new system. This is
+useful for preserving network settings, user accounts, or application data from the
+previous installation.
+
+##### Before reboot: Injecting new configuration
+
+After running `bootc install to-existing-root`, you may want to inject
+configuration files (such as `/etc/fstab`, systemd units, or other configuration)
+into the newly installed system before rebooting. The new deployment is located
+in the ostree repository structure at:
+
+`/target/ostree/deploy/<stateroot>/deploy/<checksum>.<serial>/`
+
+Where `<stateroot>` defaults to `default` unless specified via `--stateroot`.
+
+To find and modify the newly installed deployment:
+
+```bash
+# Get the deployment path
+DEPLOY_PATH=$(ostree admin --sysroot=/target --print-current-dir)
+
+# Add a systemd mount unit
+cat > ${DEPLOY_PATH}/etc/systemd/system/data.mount <<EOF
+[Unit]
+Description=Data partition
+
+[Mount]
+What=UUID=...
+Where=/data
+Type=xfs
+
+[Install]
+WantedBy=local-fs.target
+EOF
+```
+
+###### Injecting kernel arguments for local state
+
+An alternative approach is to key machine-local configuration from kernel arguments
+via the `--karg` option to `bootc install to-existing-root`.
+
+For example with filesystem mounts, systemd offers a `systemd.mount-extra` that
+can be used instead of `/etc/fstab`:
+
+```bash
+bootc install to-existing-root \
+  --karg="systemd.mount-extra=UUID=<uuid>:/data:xfs:defaults"
+```
+
+The `systemd.mount-extra` syntax is: `source:path:type:options`
+
+##### After reboot: Migrating data from the old system
+
+After rebooting into the new bootc system, the previous root filesystem is
+mounted at `/sysroot`. You can then migrate configuration and data from the
+old system to the new one.
+
+**Important:** Any data from `/etc` that you want to use in the new system must be
+manually copied from `/sysroot/etc` to `/etc` after rebooting into the new system.
+There is currently no automated mechanism for migrating this configuration data.
+This applies to network configurations, user accounts, application settings, and other
+system configuration stored in `/etc`.
+
+For example, after rebooting:
+
+```bash
+# Copy network configuration from the old system
+cp /sysroot/etc/sysconfig/network-scripts/ifcfg-eth0 /etc/sysconfig/network-scripts/
+
+# Copy application configuration
+cp -r /sysroot/etc/myapp /etc/
+```
+
+A special case is using the `--root-ssh-authorized-keys` flag during installation
+to automatically inherit root's SSH keys (which may have been injected from e.g.
+cloud instance userdata via a tool like `cloud-init`). To do this, add
+`--root-ssh-authorized-keys /target/root/.ssh/authorized_keys` to the install command.
+
+See also the [bootc-install-to-existing-root(8)](man/bootc-install-to-existing-root.8.md)
+man page for more details.
 
 ### Using `system-reinstall-bootc`
 
@@ -294,7 +383,11 @@ for legacy `/etc/fstab` references for `/` to use
 Per the [filesystem](filesystem.md) section, `/etc` and `/var` are machine-local
 state by default.  If you want to inject additional content after the installation
 process, at the current time this can be done by manually finding the
-target "deployment root" which will be underneath `/ostree/deploy/<stateroot/deploy/`.
+target "deployment root" which will be underneath `/ostree/deploy/<stateroot>/deploy/`.
+
+You can use `ostree admin --sysroot=/path/to/target --print-current-dir` to find
+the deployment directory. For detailed examples, see
+[Injecting configuration before first boot](#before-reboot-injecting-new-configuration).
 
 Installation software such as [Anaconda](https://github.com/rhinstaller/anaconda)
 do this today to implement generic `%post` scripts and the like.
