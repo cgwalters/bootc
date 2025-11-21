@@ -122,4 +122,10 @@ execute:
     test:
       - /tmt/tests/tests/test-28-factory-reset
 
+/plan-29-soft-reboot-selinux-policy:
+  summary: Test soft reboot with SELinux policy changes
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-29-soft-reboot-selinux-policy
 # END GENERATED PLANS
