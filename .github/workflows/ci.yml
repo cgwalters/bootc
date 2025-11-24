@@ -131,6 +131,13 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
         with:
           libvirt: true
+      - name: Build bcvk from PR 159
+        run: |
+          git clone https://github.com/cgwalters/bcvk-fork /tmp/bcvk
+          cd /tmp/bcvk
+          git checkout bind-storage-ro-selinux
+          cargo build --release
+          sudo install -m 0755 target/release/bcvk /usr/local/bin/bcvk
       - name: Install tmt
         run: pip install --user "tmt[provision-virtual]"
 
@@ -191,6 +198,13 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
         with:
           libvirt: true
+      - name: Build bcvk from PR 159
+        run: |
+          git clone https://github.com/cgwalters/bcvk-fork /tmp/bcvk
+          cd /tmp/bcvk
+          git checkout bind-storage-ro-selinux
+          cargo build --release
+          sudo install -m 0755 target/release/bcvk /usr/local/bin/bcvk
       - name: Install tmt
         run: pip install --user "tmt[provision-virtual]"
 
