@@ -31,7 +31,7 @@ def initial_build [] {
 RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
 " | save Dockerfile
     # Build it
-    podman build -t localhost/bootc-derived .
+    podman build --security-opt label=disable -t localhost/bootc-derived .
 
     assert (not ("/run/nextroot" | path exists))
     
@@ -59,7 +59,7 @@ RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
 RUN echo 'kargs = ["foo1=bar2"]' | tee /usr/lib/bootc/kargs.d/00-foo1bar2.toml > /dev/null
 " | save Dockerfile
     # Build it
-    podman build -t localhost/bootc-derived .
+    podman build --security-opt label=disable -t localhost/bootc-derived .
 
     bootc upgrade --soft-reboot=auto
     let st = bootc status --json | from json

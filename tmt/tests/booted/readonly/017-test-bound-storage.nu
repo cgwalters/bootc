@@ -11,7 +11,7 @@ if not (bootc_testlib have_hostexports) {
 bootc status
 let st = bootc status --json | from json
 let is_composefs = ($st.status.booted.composefs? != null)
-if is_composefs {
+if $is_composefs {
     # TODO we don't have imageDigest yet in status
     exit 0
 }

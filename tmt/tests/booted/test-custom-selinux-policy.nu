@@ -29,7 +29,7 @@ def initial_build [] {
 RUN mkdir /opt123; echo \"/opt123 /opt\" >> /etc/selinux/targeted/contexts/files/file_contexts.subs_dist
 " | save Dockerfile
     # Build it
-    podman build -t localhost/bootc-derived .
+    podman build --security-opt label=disable -t localhost/bootc-derived .
 
     bootc switch --transport containers-storage localhost/bootc-derived
 

@@ -65,7 +65,7 @@ EORUN
 " | save Dockerfile
     
     # Build the derived image
-    podman build --quiet -t localhost/bootc-derived-policy .
+    podman build --quiet --security-opt label=disable -t localhost/bootc-derived-policy .
     
     # Verify soft reboot preparation hasn't happened yet
     assert (not ("/run/nextroot" | path exists))

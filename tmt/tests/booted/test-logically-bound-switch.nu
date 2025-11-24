@@ -55,9 +55,9 @@ RUN echo sanity check > /usr/share/bound-image-sanity-check.txt
     }
 
     # Build it
-    podman build -t $name .
+    podman build --security-opt label=disable -t $name .
     # Just sanity check it
-    let v = podman run --rm $name cat /usr/share/bound-image-sanity-check.txt | str trim
+    let v = podman run --security-opt label=disable --rm $name cat /usr/share/bound-image-sanity-check.txt | str trim
     assert equal $v "sanity check"
 }
 

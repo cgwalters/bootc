@@ -49,9 +49,9 @@ COPY usr/ /usr/
 RUN echo test content > /usr/share/blah.txt
 " | save Dockerfile
     # Build it
-    podman build -t localhost/bootc-derived .
+    podman build --security-opt label=disable -t localhost/bootc-derived .
     # Just sanity check it
-    let v = podman run --rm localhost/bootc-derived cat /usr/share/blah.txt | str trim
+    let v = podman run --rm --security-opt label=disable localhost/bootc-derived cat /usr/share/blah.txt | str trim
     assert equal $v "test content"
 
     let orig_root_mtime = ls -Dl /ostree/bootc | get modified
@@ -158,7 +158,7 @@ COPY usr/ /usr/
 RUN echo test content2 > /usr/share/blah.txt
 " | save Dockerfile
     # Build it
-    podman build -t localhost/bootc-derived .
+    podman build --security-opt label=disable -t localhost/bootc-derived .
     let booted_digest = $booted.imageDigest
     print $"booted_digest = ($booted_digest)"
     # We should already be fetching updates from container storage
