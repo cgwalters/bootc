@@ -18,8 +18,19 @@ const COMMON_INST_ARGS: &[&str] = &[
     // TODO: Pass down the Secure Boot keys for tests if present
     "--firmware=uefi-insecure",
     "--label=bootc.test=1",
-    "--bind-storage-ro",
 ];
+
+// Metadata field names
+const FIELD_TRY_BIND_STORAGE: &str = "try_bind_storage";
+const FIELD_SUMMARY: &str = "summary";
+const FIELD_ADJUST: &str = "adjust";
+
+// bcvk options
+const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
+const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
+
+// Distro identifiers
+const DISTRO_CENTOS_9: &str = "centos-9";
 
 // Import the argument types from xtask.rs
 use crate::{RunTmtArgs, TmtProvisionArgs};
@@ -56,13 +67,38 @@ fn sanitize_plan_name(plan: &str) -> String {
 /// Check that required dependencies are available
 #[context("Checking dependencies")]
 fn check_dependencies(sh: &Shell) -> Result<()> {
-    for tool in ["bcvk", "tmt", "rsync"] {
+    for tool in ["bcvk", "tmt", "rsync", "podman"] {
         cmd!(sh, "which {tool}")
             .ignore_stdout()
             .run()
             .with_context(|| format!("{} is not available in PATH", tool))?;
     }
     Ok(())
+}
+
+/// Detect distro from container image by reading os-release
+/// Returns distro string like "centos-9" or "fedora-42"
+#[context("Detecting distro from image")]
+fn detect_distro_from_image(sh: &Shell, image: &str) -> Result<String> {
+    let distro = cmd!(
+        sh,
+        "podman run --rm {image} bash -c '. /usr/lib/os-release && echo $ID-$VERSION_ID'"
+    )
+    .read()
+    .context("Failed to run image as container to detect distro")?;
+
+    let distro = distro.trim();
+    if distro.is_empty() {
+        anyhow::bail!("Failed to extract distro from os-release");
+    }
+
+    Ok(distro.to_string())
+}
+
+/// Check if a distro supports --bind-storage-ro
+/// CentOS 9 lacks systemd.extra-unit.* support required for bind-storage-ro
+fn distro_supports_bind_storage_ro(distro: &str) -> bool {
+    !distro.starts_with(DISTRO_CENTOS_9)
 }
 
 /// Wait for a bcvk VM to be ready and return SSH connection info
@@ -142,6 +178,43 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
     )
 }
 
+/// Parse integration.fmf to extract extra-try_bind_storage for all plans
+#[context("Parsing integration.fmf")]
+fn parse_plan_metadata(plans_file: &Utf8Path) -> Result<std::collections::HashMap<String, bool>> {
+    let content = std::fs::read_to_string(plans_file)?;
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>(&content)
+        .context("Failed to parse integration.fmf YAML")?;
+
+    let Some(mapping) = yaml.as_mapping() else {
+        anyhow::bail!("Expected YAML mapping in integration.fmf");
+    };
+
+    let mut plan_metadata = std::collections::HashMap::new();
+
+    for (key, value) in mapping {
+        let Some(plan_name) = key.as_str() else {
+            continue;
+        };
+        if !plan_name.starts_with("/plan-") {
+            continue;
+        }
+
+        let Some(plan_data) = value.as_mapping() else {
+            continue;
+        };
+        if let Some(try_bind) = plan_data.get(&serde_yaml::Value::String(format!(
+            "extra-{}",
+            FIELD_TRY_BIND_STORAGE
+        ))) {
+            if let Some(b) = try_bind.as_bool() {
+                plan_metadata.insert(plan_name.to_string(), b);
+            }
+        }
+    }
+
+    Ok(plan_metadata)
+}
+
 /// Run TMT tests using bcvk for VM management
 /// This spawns a separate VM per test plan to avoid state leakage between tests.
 #[context("Running TMT tests")]
@@ -151,16 +224,21 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     let image = &args.image;
     let filter_args = &args.filters;
+
+    // Detect distro from the image
+    let distro = detect_distro_from_image(sh, image)?;
+
     let context = args
         .context
         .iter()
-        .map(|v| v.as_str())
-        .chain(std::iter::once("running_env=image_mode"))
-        .map(|v| format!("--context={v}"))
+        .map(|v| format!("--context={}", v))
+        .chain(std::iter::once(format!("--context=running_env=image_mode")))
+        .chain(std::iter::once(format!("--context=distro={}", distro)))
         .collect::<Vec<_>>();
     let preserve_vm = args.preserve_vm;
 
     println!("Using bcvk image: {}", image);
+    println!("Detected distro: {}", distro);
 
     // Create tmt-workdir and copy tmt bits to it
     // This works around https://github.com/teemtee/tmt/issues/4062
@@ -175,6 +253,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     // Change to workdir for running tmt commands
     let _dir = sh.push_dir(workdir);
+
+    // Parse plan metadata from integration.fmf
+    let plans_file = Utf8Path::new("tmt/plans/integration.fmf");
+    let plan_metadata = parse_plan_metadata(plans_file)?;
 
     // Get the list of plans
     println!("Discovering test plans...");
@@ -216,6 +298,9 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     let mut all_passed = true;
     let mut test_results: Vec<(String, bool, Option<String>)> = Vec::new();
 
+    // Environment variables to pass to tmt (in addition to args.env)
+    let mut tmt_env_vars = Vec::new();
+
     // Run each plan in its own VM
     for plan in plans {
         let plan_name = sanitize_plan_name(plan);
@@ -226,11 +311,46 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         println!("VM name: {}", vm_name);
         println!("========================================\n");
 
-        // Launch VM with bcvk
+        // Reset plan-specific environment variables
+        tmt_env_vars.clear();
 
+        // Get bcvk-opts based on plan metadata and distro support
+        let plan_bcvk_opts = {
+            let supports_bind_storage_ro = distro_supports_bind_storage_ro(&distro);
+
+            // Plan names from tmt are like /tmt/plans/integration/plan-01-readonly
+            // but metadata keys are like /plan-01-readonly, so match on suffix
+            let try_bind_storage = plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, &v)| v)
+                .unwrap_or(false);
+
+            let mut opts = Vec::new();
+
+            // If test wants bind storage and distro supports it, add --bind-storage-ro
+            if try_bind_storage && supports_bind_storage_ro {
+                opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
+
+                // If upgrade image is provided, set it as an environment variable for tmt
+                // (not bcvk, as bcvk doesn't support --env)
+                if let Some(ref upgrade_img) = args.upgrade_image {
+                    tmt_env_vars.push(format!("{}={}", ENV_BOOTC_UPGRADE_IMAGE, upgrade_img));
+                }
+            } else if try_bind_storage && !supports_bind_storage_ro {
+                println!(
+                    "Note: Test wants bind storage but skipping on {} (missing systemd.extra-unit.* support)",
+                    distro
+                );
+            }
+
+            opts
+        };
+
+        // Launch VM with bcvk
         let launch_result = cmd!(
             sh,
-            "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {image}"
+            "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {plan_bcvk_opts...} {image}"
         )
         .run()
         .context("Launching VM with bcvk");
@@ -348,6 +468,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let env = ["TMT_SCRIPTS_DIR=/var/lib/tmt/scripts", "BCVK_EXPORT=1"]
             .into_iter()
             .chain(args.env.iter().map(|v| v.as_str()))
+            .chain(tmt_env_vars.iter().map(|v| v.as_str()))
             .flat_map(|v| ["--environment", v]);
         let test_result = cmd!(
             sh,
@@ -537,12 +658,16 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
 /// Parse tmt metadata from a test file
 /// Looks for:
 /// # number: N
+/// # extra:
+/// #   try_bind_storage: true
 /// # tmt:
 /// #   <yaml content>
 fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
     let mut number = None;
+    let mut in_extra_block = false;
     let mut in_tmt_block = false;
-    let mut yaml_lines = Vec::new();
+    let mut extra_yaml_lines = Vec::new();
+    let mut tmt_yaml_lines = Vec::new();
 
     for line in content.lines().take(50) {
         let trimmed = line.trim();
@@ -557,17 +682,28 @@ fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
             continue;
         }
 
-        if trimmed == "# tmt:" {
-            in_tmt_block = true;
+        if trimmed == "# extra:" {
+            in_extra_block = true;
+            in_tmt_block = false;
             continue;
-        } else if in_tmt_block {
+        } else if trimmed == "# tmt:" {
+            in_tmt_block = true;
+            in_extra_block = false;
+            continue;
+        } else if in_extra_block || in_tmt_block {
             // Stop if we hit a line that doesn't start with #, or is just "#"
             if !trimmed.starts_with('#') || trimmed == "#" {
-                break;
+                in_extra_block = false;
+                in_tmt_block = false;
+                continue;
             }
             // Remove the leading # and preserve indentation
             if let Some(yaml_line) = line.strip_prefix('#') {
-                yaml_lines.push(yaml_line);
+                if in_extra_block {
+                    extra_yaml_lines.push(yaml_line);
+                } else {
+                    tmt_yaml_lines.push(yaml_line);
+                }
             }
         }
     }
@@ -576,15 +712,25 @@ fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
         return Ok(None);
     };
 
-    let yaml_content = yaml_lines.join("\n");
-    let extra: serde_yaml::Value = if yaml_content.trim().is_empty() {
+    // Parse extra metadata
+    let extra_yaml = extra_yaml_lines.join("\n");
+    let extra: serde_yaml::Value = if extra_yaml.trim().is_empty() {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     } else {
-        serde_yaml::from_str(&yaml_content)
-            .with_context(|| format!("Failed to parse tmt metadata YAML:\n{}", yaml_content))?
+        serde_yaml::from_str(&extra_yaml)
+            .with_context(|| format!("Failed to parse extra metadata YAML:\n{}", extra_yaml))?
     };
 
-    Ok(Some(TmtMetadata { number, extra }))
+    // Parse tmt metadata
+    let tmt_yaml = tmt_yaml_lines.join("\n");
+    let tmt: serde_yaml::Value = if tmt_yaml.trim().is_empty() {
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    } else {
+        serde_yaml::from_str(&tmt_yaml)
+            .with_context(|| format!("Failed to parse tmt metadata YAML:\n{}", tmt_yaml))?
+    };
+
+    Ok(Some(TmtMetadata { number, extra, tmt }))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -592,10 +738,10 @@ fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
 struct TmtMetadata {
     /// Test number for ordering and naming
     number: u32,
-    /// All other fmf attributes (summary, duration, adjust, require, etc.)
-    /// Note: summary and duration are typically required by fmf
-    #[serde(flatten)]
+    /// Extra metadata (try_bind_storage, etc.)
     extra: serde_yaml::Value,
+    /// TMT metadata (summary, duration, adjust, require, etc.)
+    tmt: serde_yaml::Value,
 }
 
 #[derive(Debug)]
@@ -603,8 +749,10 @@ struct TestDef {
     number: u32,
     name: String,
     test_command: String,
-    /// All fmf attributes to pass through (summary, duration, adjust, etc.)
-    extra: serde_yaml::Value,
+    /// Whether this test wants to try bind storage (if distro supports it)
+    try_bind_storage: bool,
+    /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
+    tmt: serde_yaml::Value,
 }
 
 /// Generate tmt/plans/integration.fmf from test definitions
@@ -666,11 +814,24 @@ pub(crate) fn update_integration() -> Result<()> {
 
         let test_command = format!("{} {}", extension, relative_path.display());
 
+        // Check if test wants bind storage
+        let try_bind_storage = metadata
+            .extra
+            .as_mapping()
+            .and_then(|m| {
+                m.get(&serde_yaml::Value::String(
+                    FIELD_TRY_BIND_STORAGE.to_string(),
+                ))
+            })
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         tests.push(TestDef {
             number: metadata.number,
             name: display_name,
             test_command,
-            extra: metadata.extra,
+            try_bind_storage,
+            tmt: metadata.tmt,
         });
     }
 
@@ -686,8 +847,8 @@ pub(crate) fn update_integration() -> Result<()> {
     for test in &tests {
         let test_key = format!("/test-{:02}-{}", test.number, test.name);
 
-        // Start with the extra metadata (summary, duration, adjust, etc.)
-        let mut test_value = if let serde_yaml::Value::Mapping(map) = &test.extra {
+        // Start with the tmt metadata (summary, duration, adjust, etc.)
+        let mut test_value = if let serde_yaml::Value::Mapping(map) = &test.tmt {
             map.clone()
         } else {
             serde_yaml::Mapping::new()
@@ -745,11 +906,11 @@ pub(crate) fn update_integration() -> Result<()> {
         let plan_key = format!("/plan-{:02}-{}", test.number, test.name);
         let mut plan_value = serde_yaml::Mapping::new();
 
-        // Extract summary from extra metadata
-        if let serde_yaml::Value::Mapping(map) = &test.extra {
-            if let Some(summary) = map.get(&serde_yaml::Value::String("summary".to_string())) {
+        // Extract summary from tmt metadata
+        if let serde_yaml::Value::Mapping(map) = &test.tmt {
+            if let Some(summary) = map.get(&serde_yaml::Value::String(FIELD_SUMMARY.to_string())) {
                 plan_value.insert(
-                    serde_yaml::Value::String("summary".to_string()),
+                    serde_yaml::Value::String(FIELD_SUMMARY.to_string()),
                     summary.clone(),
                 );
             }
@@ -772,13 +933,21 @@ pub(crate) fn update_integration() -> Result<()> {
         );
 
         // Extract and add adjust section if present
-        if let serde_yaml::Value::Mapping(map) = &test.extra {
-            if let Some(adjust) = map.get(&serde_yaml::Value::String("adjust".to_string())) {
+        if let serde_yaml::Value::Mapping(map) = &test.tmt {
+            if let Some(adjust) = map.get(&serde_yaml::Value::String(FIELD_ADJUST.to_string())) {
                 plan_value.insert(
-                    serde_yaml::Value::String("adjust".to_string()),
+                    serde_yaml::Value::String(FIELD_ADJUST.to_string()),
                     adjust.clone(),
                 );
             }
+        }
+
+        // Add extra-try_bind_storage if test wants it
+        if test.try_bind_storage {
+            plan_value.insert(
+                serde_yaml::Value::String(format!("extra-{}", FIELD_TRY_BIND_STORAGE)),
+                serde_yaml::Value::Bool(true),
+            );
         }
 
         plans_mapping.insert(
@@ -861,16 +1030,16 @@ use tap.nu
         let metadata = parse_tmt_metadata(content).unwrap().unwrap();
         assert_eq!(metadata.number, 1);
 
-        // Verify extra fields are captured
-        let extra = metadata.extra.as_mapping().unwrap();
+        // Verify tmt fields are captured
+        let tmt = metadata.tmt.as_mapping().unwrap();
         assert_eq!(
-            extra.get(&serde_yaml::Value::String("summary".to_string())),
+            tmt.get(&serde_yaml::Value::String("summary".to_string())),
             Some(&serde_yaml::Value::String(
                 "Execute booted readonly/nondestructive tests".to_string()
             ))
         );
         assert_eq!(
-            extra.get(&serde_yaml::Value::String("duration".to_string())),
+            tmt.get(&serde_yaml::Value::String("duration".to_string())),
             Some(&serde_yaml::Value::String("30m".to_string()))
         );
     }
@@ -892,9 +1061,9 @@ use std assert
         let metadata = parse_tmt_metadata(content).unwrap().unwrap();
         assert_eq!(metadata.number, 27);
 
-        // Verify adjust section is in extra
-        let extra = metadata.extra.as_mapping().unwrap();
-        assert!(extra.contains_key(&serde_yaml::Value::String("adjust".to_string())));
+        // Verify adjust section is in tmt
+        let tmt = metadata.tmt.as_mapping().unwrap();
+        assert!(tmt.contains_key(&serde_yaml::Value::String("adjust".to_string())));
     }
 
     #[test]
@@ -924,11 +1093,41 @@ set -eux
         let metadata = parse_tmt_metadata(content).unwrap().unwrap();
         assert_eq!(metadata.number, 26);
 
-        let extra = metadata.extra.as_mapping().unwrap();
+        let tmt = metadata.tmt.as_mapping().unwrap();
         assert_eq!(
-            extra.get(&serde_yaml::Value::String("duration".to_string())),
+            tmt.get(&serde_yaml::Value::String("duration".to_string())),
             Some(&serde_yaml::Value::String("45m".to_string()))
         );
-        assert!(extra.contains_key(&serde_yaml::Value::String("adjust".to_string())));
+        assert!(tmt.contains_key(&serde_yaml::Value::String("adjust".to_string())));
+    }
+
+    #[test]
+    fn test_parse_tmt_metadata_with_try_bind_storage() {
+        let content = r#"# number: 24
+# extra:
+#   try_bind_storage: true
+# tmt:
+#   summary: Execute local upgrade tests
+#   duration: 30m
+#
+use std assert
+"#;
+
+        let metadata = parse_tmt_metadata(content).unwrap().unwrap();
+        assert_eq!(metadata.number, 24);
+
+        let extra = metadata.extra.as_mapping().unwrap();
+        assert_eq!(
+            extra.get(&serde_yaml::Value::String("try_bind_storage".to_string())),
+            Some(&serde_yaml::Value::Bool(true))
+        );
+
+        let tmt = metadata.tmt.as_mapping().unwrap();
+        assert_eq!(
+            tmt.get(&serde_yaml::Value::String("summary".to_string())),
+            Some(&serde_yaml::Value::String(
+                "Execute local upgrade tests".to_string()
+            ))
+        );
     }
 }

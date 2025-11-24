@@ -43,6 +43,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-01-readonly
+  extra-try_bind_storage: true
 
 /plan-20-image-pushpull-upgrade:
   summary: Execute local upgrade tests
@@ -85,6 +86,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-24-image-upgrade-reboot
+  extra-try_bind_storage: true
 
 /plan-25-soft-reboot:
   summary: Execute soft reboot test

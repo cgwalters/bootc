@@ -119,7 +119,7 @@ _build-upgrade-image:
 # Assume the localhost/bootc-integration image is up to date, and just run tests.
 # Useful for iterating on tests quickly.
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_upgrade_image={{integration_upgrade_img}} {{integration_img}} {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{integration_upgrade_img}} {{integration_img}} {{ARGS}}
 
 # Cleanup all test VMs created by tmt tests
 tmt-vm-cleanup:

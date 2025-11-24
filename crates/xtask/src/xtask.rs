@@ -71,6 +71,10 @@ pub(crate) struct RunTmtArgs {
     #[clap(long)]
     pub(crate) env: Vec<String>,
 
+    /// Upgrade image to use when bind-storage-ro is available (e.g., localhost/bootc-integration-upgrade)
+    #[clap(long)]
+    pub(crate) upgrade_image: Option<String>,
+
     /// Preserve VMs after test completion (useful for debugging)
     #[arg(long)]
     pub(crate) preserve_vm: bool,

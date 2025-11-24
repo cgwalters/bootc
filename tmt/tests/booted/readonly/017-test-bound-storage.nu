@@ -16,12 +16,15 @@ if $is_composefs {
     exit 0
 }
 
-let booted = $st.status.booted
-let imgref = $booted.image.image.image
-let digest = $booted.image.imageDigest
-let imgref_untagged = $imgref | split row ':' | first
-let digested_imgref = $"($imgref_untagged)@($digest)"
-systemd-run -dqP /bin/env
-podman inspect $digested_imgref
+# If we have --bind-storage-ro, then verify it 
+if ($env.BOOTC_upgrade_image? != null) {
+    let booted = $st.status.booted
+    let imgref = $booted.image.image.image
+    let digest = $booted.image.imageDigest
+    let imgref_untagged = $imgref | split row ':' | first
+    let digested_imgref = $"($imgref_untagged)@($digest)"
+    systemd-run -dqP /bin/env
+    podman inspect $digested_imgref
+}
 
 tap ok

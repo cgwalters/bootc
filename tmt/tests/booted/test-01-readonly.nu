@@ -1,4 +1,6 @@
 # number: 1
+# extra:
+#   try_bind_storage: true
 # tmt:
 #   summary: Execute booted readonly/nondestructive tests
 #   duration: 30m
