@@ -121,36 +121,20 @@ cd %{name}-%{version}-build
 
 %build
 export SYSTEM_REINSTALL_BOOTC_INSTALL_PODMAN_PATH=%{system_reinstall_bootc_install_podman_path}
+# Build this first to avoid feature skew
+make manpages
+
+# Build all binaries
 %if 0%{?container_build}
-# Container build: use cargo directly with cached dependencies
-export CARGO_HOME=/var/roothome/.cargo
-cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} \
-    --bin=bootc --bin=system-reinstall-bootc --bin=bootc-initramfs-setup \
-    %{?with_tests:--bin tests-integration}
-make manpages
+# Container build: use cargo directly with cached dependencies to avoid RPM macro overhead
+cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} --bins
 %else
-# Build the main bootc binary
+# Non-container build: use RPM macros for proper dependency tracking
 %if %new_cargo_macros
-    %cargo_build %{?with_rhsm:-f rhsm}
+    %cargo_build %{?with_rhsm:-f rhsm} -- --bins
 %else
-    %cargo_build %{?with_rhsm:--features rhsm}
+    %cargo_build %{?with_rhsm:--features rhsm} -- --bins
 %endif
-
-# Build the system reinstallation CLI binary
-%global cargo_args -p system-reinstall-bootc
-%if %new_cargo_macros
-    # In cargo-rpm-macros, the cargo_build macro does flag processing,
-    # so we need to pass '--' to signify that cargo_args is not part
-    # of the macro args
-    %cargo_build -- %cargo_args
-%else
-    # Older macros from rust-toolset do *not* do flag processing, so
-    # '--' would be passed through to cargo directly, which is not
-    # what we want.
-    %cargo_build %cargo_args
-%endif
-
-make manpages
 %endif
 
 %if ! 0%{?container_build}

@@ -29,16 +29,19 @@ prefix ?= /usr
 # We may in the future also want to include Fedora+derivatives as
 # the code is really tiny.
 # (Note we should also make installation of the units conditional on the rhsm feature)
-CARGO_FEATURES ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
+CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
+# You can set this to override all cargo features, including the defaults
+CARGO_FEATURES ?= $(CARGO_FEATURES_DEFAULT)
 
-all: bin manpages
+# Build all binaries
+.PHONY: bin
+bin: manpages
+	cargo build --release --features "$(CARGO_FEATURES)" --bins
 
-bin:
-	cargo build --release --features "$(CARGO_FEATURES)"
-
+# Note this cargo build is run without features (such as rhsm)
 .PHONY: manpages
 manpages:
-	cargo run --package xtask -- manpages
+	cargo run --release --package xtask -- manpages
 
 STORAGE_RELATIVE_PATH ?= $(shell realpath -m -s --relative-to="$(prefix)/lib/bootc/storage" /sysroot/ostree/bootc/storage)
 install:
