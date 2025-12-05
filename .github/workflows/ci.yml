@@ -120,59 +120,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
-
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v6
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-        with:
-          libvirt: true
-      - name: Install tmt
-        run: pip install --user "tmt[provision-virtual]"
-
-      - name: Setup env
-        run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
-
-      - name: Build container
-        run: |
-          just build-integration-test-image
-          # Extra cross-check (duplicating the integration test) that we're using the right base
-          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
-          test ${{ matrix.test_os }} = "${used_vid}"
-
-      - name: Unit and container integration tests
-        run: just test-container
-
-      - name: Run all TMT tests
-        run: just test-tmt
-
-      - name: Archive TMT logs
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-ostree-${{ env.ARCH }}
-          path: /var/tmp/tmt
-
-  # This variant does composefs testing
-  test-integration-cfs:
-    continue-on-error: ${{ matrix.experimental }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # OS via Justfile variables too
-        test_os: [fedora-42, fedora-43, fedora-44, centos-10]
-        variant: [composefs-sealeduki-sdboot]
-        experimental: [false]
-        # For issue https://github.com/bootc-dev/bootc/issues/1812
-        include:
+        test_os: [fedora-42, fedora-43, fedora-44, centos-9, centos-10]
+        variant: [ostree, composefs-sealeduki-sdboot]
+        exclude:
+          # centos-9 UKI is experimental/broken (https://github.com/bootc-dev/bootc/issues/1812)
           - test_os: centos-9
             variant: composefs-sealeduki-sdboot
-            experimental: true
 
     runs-on: ubuntu-24.04
 
@@ -188,10 +141,13 @@ jobs:
       - name: Setup env
         run: |
           BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          BUILDROOTBASE=$(just pullspec-for-os buildroot-base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
-          echo "BOOTC_buildroot_base=${BUILDROOTBASE}" >> $GITHUB_ENV
-          echo "BOOTC_variant="${{ matrix.variant }} >> $GITHUB_ENV
+          echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
+
+          if [ "${{ matrix.variant }}" = "composefs-sealeduki-sdboot" ]; then
+            BUILDROOTBASE=$(just pullspec-for-os buildroot-base ${{ matrix.test_os }})
+            echo "BOOTC_buildroot_base=${BUILDROOTBASE}" >> $GITHUB_ENV
+          fi
 
       - name: Build container
         run: |
@@ -204,25 +160,28 @@ jobs:
         run: just test-container
 
       - name: Run TMT tests
-        # Note that this one only runs a subset of tests right now
-        run: just test-composefs
+        run: |
+          if [ "${{ matrix.variant }}" = "composefs-sealeduki-sdboot" ]; then
+            just test-composefs
+          else
+            just test-tmt
+          fi
 
       - name: Archive TMT logs
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-cfs-${{ env.ARCH }}
+          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.variant }}-${{ env.ARCH }}
           path: /var/tmp/tmt
 
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, test-integration, test-integration-cfs]
+    needs: [cargo-deny, validate, test-integration]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
         if: >-
           needs.cargo-deny.result != 'success' ||
           needs.validate.result != 'success' ||
-          needs.test-integration.result != 'success' ||
-          needs.test-integration-cfs.result != 'success'
+          needs.test-integration.result != 'success'
