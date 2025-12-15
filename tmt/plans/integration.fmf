@@ -140,4 +140,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-31-switch-to-unified
+
+/plan-31-switch-mutate-in-place:
+  summary: switch --mutate-in-place
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-31-switch-mutate-in-place
 # END GENERATED PLANS

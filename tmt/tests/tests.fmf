@@ -74,3 +74,8 @@
   summary: Onboard to unified storage, build derived image, and switch to it
   duration: 30m
   test: nu booted/test-switch-to-unified.nu
+
+/test-31-switch-mutate-in-place:
+  summary: switch --mutate-in-place
+  duration: 30m
+  test: nu booted/test-switch-mutate-in-place.nu

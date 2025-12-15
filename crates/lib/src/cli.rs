@@ -1206,31 +1206,29 @@ async fn switch_ostree(
 /// Implementation of the `bootc switch` CLI command.
 #[context("Switching")]
 async fn switch(opts: SwitchOpts) -> Result<()> {
+    // If we're doing an in-place mutation, we shortcut most of the rest of the work here
+    // TODO: what we really want here is Storage::detect_from_root() that also handles
+    // composefs. But for now this just assumes ostree.
+    if opts.mutate_in_place {
+        let target = imgref_for_switch(&opts)?;
+        let deployid = {
+            // Clone to pass into helper thread
+            let target = target.clone();
+            let root = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+            tokio::task::spawn_blocking(move || {
+                crate::deploy::switch_origin_inplace(&root, &target)
+            })
+            .await??
+        };
+        println!("Updated {deployid} to pull from {target}");
+        return Ok(());
+    }
     let storage = &get_storage().await?;
     match storage.kind()? {
         BootedStorageKind::Ostree(booted_ostree) => {
-            // If we're doing an in-place mutation, we shortcut most of the rest of the work here
-            if opts.mutate_in_place {
-                let target = imgref_for_switch(&opts)?;
-                let deployid = {
-                    // Clone to pass into helper thread
-                    let target = target.clone();
-                    let root =
-                        cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
-                    tokio::task::spawn_blocking(move || {
-                        crate::deploy::switch_origin_inplace(&root, &target)
-                    })
-                    .await??
-                };
-                println!("Updated {deployid} to pull from {target}");
-                return Ok(());
-            }
             switch_ostree(opts, storage, &booted_ostree).await
         }
         BootedStorageKind::Composefs(booted_cfs) => {
-            if opts.mutate_in_place {
-                anyhow::bail!("--mutate-in-place is not yet supported for composefs backend");
-            }
             switch_composefs(opts, storage, &booted_cfs).await
         }
     }
