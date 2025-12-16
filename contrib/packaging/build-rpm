@@ -29,10 +29,17 @@ else
 fi
 
 # Build RPM
+# For reproducible builds:
+# - use_source_date_epoch_as_buildtime: RPM build timestamp uses SOURCE_DATE_EPOCH
+# - clamp_mtime_to_source_date_epoch: file mtimes clamped to SOURCE_DATE_EPOCH
+# - _buildhost: fixed hostname for consistent RPM metadata
 rpmbuild -bb \
   --define "_topdir /tmp/rpmbuild" \
   --define "_builddir ${SRC_DIR}" \
   --define "container_build 1" \
+  --define "use_source_date_epoch_as_buildtime 1" \
+  --define "clamp_mtime_to_source_date_epoch 1" \
+  --define "_buildhost reproducible" \
   --with tests \
   --nocheck \
   "${SPEC_FILE}"

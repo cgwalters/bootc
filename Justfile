@@ -43,11 +43,39 @@ buildargs := base_buildargs + " --secret=id=secureboot_key,src=target/test-secur
 # Args for build-sealed (no base arg, it sets that itself)
 sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
 
+# Compute SOURCE_DATE_EPOCH and VERSION from git for reproducible builds.
+# Outputs shell variable assignments that can be eval'd.
+_git-build-vars:
+    #!/bin/bash
+    set -euo pipefail
+    SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+    # Compute version from git (matching xtask.rs gitrev logic)
+    if VERSION=$(git describe --tags --exact-match 2>/dev/null); then
+        VERSION="${VERSION#v}"
+        VERSION="${VERSION//-/.}"
+    else
+        COMMIT=$(git rev-parse HEAD | cut -c1-10)
+        COMMIT_TS=$(git show -s --format=%ct)
+        TIMESTAMP=$(date -u -d @${COMMIT_TS} +%Y%m%d%H%M)
+        VERSION="${TIMESTAMP}.g${COMMIT}"
+    fi
+    echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+    echo "VERSION=${VERSION}"
+
 # The default target: build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
-build: package _keygen
-    podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
+#
+# The Dockerfile builds RPMs internally in its 'build' stage, so we don't need
+# to call 'package' first. This avoids cache invalidation from external files.
+build: _keygen
+    #!/bin/bash
+    set -xeuo pipefail
+    eval $(just _git-build-vars)
+    podman build {{base_buildargs}} --target=final \
+        --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+        --build-arg=pkgversion=${VERSION} \
+        -t {{base_img}}-bin {{buildargs}} .
     ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
 
 # Generate Secure Boot keys (only for our own CI/testing)
@@ -62,18 +90,9 @@ build-sealed:
 _packagecontainer:
     #!/bin/bash
     set -xeuo pipefail
-    # Compute version from git (matching xtask.rs gitrev logic)
-    if VERSION=$(git describe --tags --exact-match 2>/dev/null); then
-        VERSION="${VERSION#v}"
-        VERSION="${VERSION//-/.}"
-    else
-        COMMIT=$(git rev-parse HEAD | cut -c1-10)
-        COMMIT_TS=$(git show -s --format=%ct)
-        TIMESTAMP=$(date -u -d @${COMMIT_TS} +%Y%m%d%H%M)
-        VERSION="${TIMESTAMP}.g${COMMIT}"
-    fi
+    eval $(just _git-build-vars)
     echo "Building RPM with version: ${VERSION}"
-    podman build {{base_buildargs}} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
+    podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
 
 # Build packages (e.g. RPM) into target/packages/
 # Any old packages will be removed.
@@ -86,7 +105,8 @@ package: _packagecontainer
     podman rmi localhost/bootc-pkg
 
 # Copy pre-existing packages from PATH into target/packages/
-# Used to prepare for building with pre-built packages
+# Note: This is mainly for CI artifact extraction; build-from-package
+# now uses volume mounts directly instead of copying to target/packages/.
 copy-packages-from PATH:
     #!/bin/bash
     set -xeuo pipefail
@@ -101,11 +121,15 @@ copy-packages-from PATH:
     chmod a+r target/packages/*.rpm
 
 # Build the container image using pre-existing packages from PATH
-# Note: The Dockerfile reads from target/packages/, so copy the packages there first
-# if they're in a different location.
+# Uses the 'final-from-packages' target with a volume mount to inject packages,
+# avoiding Docker context cache invalidation issues.
 build-from-package PATH: _keygen
-    @if [ "{{PATH}}" != "target/packages" ]; then just copy-packages-from {{PATH}}; fi
-    podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
+    #!/bin/bash
+    set -xeuo pipefail
+    # Resolve to absolute path for podman volume mount
+    # Use :z for SELinux relabeling
+    pkg_path=$(realpath "{{PATH}}")
+    podman build {{base_buildargs}} --target=final-from-packages -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
     ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
 
 # Pull images used by hack/lbi
@@ -137,7 +161,10 @@ run-container-external-tests:
 
 # We build the unit tests into a container image
 build-units:
-    podman build {{base_buildargs}} --target units -t localhost/bootc-units .
+    #!/bin/bash
+    set -xeuo pipefail
+    eval $(just _git-build-vars)
+    podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} --target units -t localhost/bootc-units .
 
 # Perform validation (build, linting) in a container build environment
 validate:
@@ -209,3 +236,10 @@ mdbook-serve: build-mdbook
 # Use this after adding, removing, or modifying CLI options or schemas.
 update-generated:
     cargo run -p xtask update-generated
+
+# Verify build system properties (reproducible builds)
+#
+# This runs `just package` twice and verifies that the resulting RPMs
+# are bit-for-bit identical, confirming SOURCE_DATE_EPOCH is working.
+check-buildsys:
+    cargo run -p xtask check-buildsys

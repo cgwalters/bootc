@@ -15,11 +15,6 @@ COPY . /src
 FROM scratch as packaging
 COPY contrib/packaging /
 
-# This image captures pre-built packages from the context.
-# By COPYing into a stage, we avoid SELinux issues with context bind mounts.
-FROM scratch as packages
-COPY target/packages/*.rpm /
-
 FROM $base as base
 # Mark this as a test image (moved from --label build flag to fix layer caching)
 LABEL bootc.testimage="1"
@@ -51,6 +46,9 @@ RUN /src/contrib/packaging/configure-systemdboot download
 FROM buildroot as build
 # Version for RPM build (optional, computed from git in Justfile)
 ARG pkgversion
+# For reproducible builds, SOURCE_DATE_EPOCH must be exported as ENV for rpmbuild to see it
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
@@ -71,27 +69,33 @@ ENV TMPDIR=/var/tmp
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make install-unit-tests
 
 # This just does syntax checking
-FROM build as validate
+FROM buildroot as validate
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make validate
 
-# The final image that derives from the original base and adds the release binaries
-FROM base
-# See the Justfile for possible variants
+# Common base for final images: configures variant, rootfs, and injects extra content
+FROM base as final-common
 ARG variant
 RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
     --mount=type=bind,from=sdboot-content,target=/run/sdboot-content \
     --mount=type=bind,from=sdboot-signed,target=/run/sdboot-signed \
     /run/packaging/configure-variant "${variant}"
-# Support overriding the rootfs at build time conveniently
-ARG rootfs
+ARG rootfs=""
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
-# Inject additional content
 COPY --from=packaging /usr-extras/ /usr/
-# Install packages from the packages stage
-# Using bind from a stage avoids SELinux issues with context bind mounts
+
+# Default target for source builds (just build)
+# Installs packages from the internal build stage
+FROM final-common as final
 RUN --mount=type=bind,from=packaging,target=/run/packaging \
-    --mount=type=bind,from=packages,target=/build-packages \
+    --mount=type=bind,from=build,target=/build-output \
     --network=none \
-    /run/packaging/install-rpm-and-setup /build-packages
-# Finally, testour own linting
+    /run/packaging/install-rpm-and-setup /build-output/out
+RUN bootc container lint --fatal-warnings
+
+# Alternative target for pre-built packages (CI workflow)
+# Use with: podman build --target=final-from-packages -v path/to/packages:/run/packages:ro
+FROM final-common as final-from-packages
+RUN --mount=type=bind,from=packaging,target=/run/packaging \
+    --network=none \
+    /run/packaging/install-rpm-and-setup /run/packages
 RUN bootc container lint --fatal-warnings
