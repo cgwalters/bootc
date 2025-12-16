@@ -139,10 +139,12 @@ impl CommandRunExt for Command {
 
     /// Synchronously execute the child, and return an error if the child exited unsuccessfully.
     fn run_capture_stderr(&mut self) -> Result<()> {
-        let stderr = tempfile::tempfile()?;
+        let stderr = tempfile::tempfile().context("Allocating tempfile")?;
         self.stderr(stderr.try_clone()?);
         tracing::trace!("exec: {self:?}");
-        self.status()?.check_status_with_stderr(stderr)
+        self.status()
+            .context("Executing child")?
+            .check_status_with_stderr(stderr)
     }
 
     #[allow(unsafe_code)]
@@ -168,7 +170,7 @@ impl CommandRunExt for Command {
     }
 
     fn run_get_output(&mut self) -> Result<Box<dyn std::io::BufRead>> {
-        let mut stdout = tempfile::tempfile()?;
+        let mut stdout = tempfile::tempfile().context("Allocating tempfile")?;
         self.stdout(stdout.try_clone()?);
         self.run_capture_stderr()?;
         stdout.seek(std::io::SeekFrom::Start(0)).context("seek")?;
