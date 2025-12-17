@@ -43,7 +43,11 @@ lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.a
 generic_buildargs := ""
 # Args for package building (no secrets needed, just builds RPMs)
 base_buildargs := generic_buildargs + " --build-arg=base=" + base + " --build-arg=variant=" + variant
-buildargs := base_buildargs + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
+# - scratch builds need extra perms per https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
+# - we do secure boot signing here, so provide the keys
+buildargs := base_buildargs \
+             + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
+             + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
 # Args for build-sealed (no base arg, it sets that itself)
 sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
 
