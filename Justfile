@@ -47,6 +47,15 @@ buildargs := base_buildargs + " --secret=id=secureboot_key,src=target/test-secur
 # Args for build-sealed (no base arg, it sets that itself)
 sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
 
+# The default target: build the container image from current sources.
+# Note commonly you might want to override the base image via e.g.
+# `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
+#
+# This first builds RPMs via the `package` target, then injects them
+# into the container image.
+build: package _keygen
+    @just _build-from-package target/packages
+
 # Compute SOURCE_DATE_EPOCH and VERSION from git for reproducible builds.
 # Outputs shell variable assignments that can be eval'd.
 _git-build-vars:
@@ -65,15 +74,6 @@ _git-build-vars:
     fi
     echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
     echo "VERSION=${VERSION}"
-
-# The default target: build the container image from current sources.
-# Note commonly you might want to override the base image via e.g.
-# `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
-#
-# This first builds RPMs via the `package` target, then injects them
-# into the container image.
-build: package _keygen
-    @just _build-from-package target/packages
 
 # Generate Secure Boot keys (only for our own CI/testing)
 _keygen:
