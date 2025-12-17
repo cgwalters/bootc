@@ -32,10 +32,6 @@ WORKDIR /src
 # First we download all of our Rust dependencies
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
 
-FROM buildroot as sdboot-content
-# Writes to /out
-RUN /src/contrib/packaging/configure-systemdboot download
-
 # We always do a "from scratch" build
 # https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
 # because this fixes https://github.com/containers/composefs-rs/issues/132
@@ -63,6 +59,26 @@ ENV container=oci
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
 
+# This layer contains things which aren't in the default image and may
+# be used for sealing images in particular.
+FROM base as tools
+RUN <<EORUN
+set -xeuo pipefail
+. /usr/lib/os-release
+case "${ID}${ID_LIKE:-}" in
+  "*centos*")
+    # Enable EPEL for sbsigntools
+    dnf -y install epel-release
+    ;;
+esac
+dnf -y install systemd-ukify sbsigntools
+# And in the sealing case, we're going to inject and sign systemd-boot
+# into the target image.
+mkdir -p /out
+cd /out
+dnf -y download systemd-boot-unsigned
+EORUN
+
 # -------------
 # external dependency cutoff point:
 # NOTE: Every RUN instruction past this point should use `--network=none`; we want to ensure
@@ -79,14 +95,32 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
 RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
-FROM buildroot as sdboot-signed
+# This image signs systemd-boot using our key, and writes the resulting binary into /out
+FROM tools as sdboot-signed
 # The secureboot key and cert are passed via Justfile
 # We write the signed binary into /out
 RUN --network=none \
-    --mount=type=bind,from=sdboot-content,target=/run/sdboot-package \
+    --mount=type=bind,from=tools,target=/run/sdboot-package \
     --mount=type=secret,id=secureboot_key \
-    --mount=type=secret,id=secureboot_cert \
-    /src/contrib/packaging/configure-systemdboot sign
+    --mount=type=secret,id=secureboot_cert <<EORUN
+set -xeuo pipefail
+sdboot=$(ls /usr/lib/systemd/boot/efi/systemd-boot*.efi)
+sdboot_bn=$(basename ${sdboot})
+mkdir -p /out
+rpm -Uvh /run/sdboot-package/out/*.rpm
+# Sign with sbsign using db certificate and key
+sbsign --key /run/secrets/secureboot_key \
+       --cert /run/secrets/secureboot_cert \
+       --output /out/${sdboot_bn} \
+       /${sdboot}
+ls -al /out/${sdboot_bn}
+EORUN
+
+# ----
+# Unit and integration tests
+# The section here (up until the last `FROM` line which acts as the default target)
+# is non-default images for unit and source code validation.
+# ----
 
 # This "build" includes our unit tests
 FROM build as units
@@ -99,8 +133,14 @@ RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,targ
 FROM buildroot as validate
 RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
 
+# ----
+# Final image assembly
 # Common base for final images: configures variant, rootfs, and injects extra content
-FROM base as final-common
+# ----
+FROM base
+# Install our built bootc package
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
+    /run/packaging/install-rpm-and-setup /run/packages
 ARG variant
 RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
     --mount=type=bind,from=sdboot-content,target=/run/sdboot-content \
@@ -109,10 +149,5 @@ RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
 ARG rootfs=""
 RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 COPY --from=packaging /usr-extras/ /usr/
-
-# Final target: installs pre-built packages from /run/packages volume mount.
-# Use with: podman build --target=final -v path/to/packages:/run/packages:ro
-FROM final-common as final
-RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
-    /run/packaging/install-rpm-and-setup /run/packages
+# And finally, test our linting
 RUN --network=none bootc container lint --fatal-warnings

@@ -40,14 +40,13 @@ lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.a
 # TODO: Gather more info and file a buildah bug
 generic_buildargs := ""
 # Args for package building (no secrets needed, just builds RPMs)
-base_buildargs := generic_buildargs + " --build-arg=base=" + base + " --build-arg=variant=" + variant
+variant_buildargs := " --build-arg=variant=" + variant
+base_buildargs := generic_buildargs + " --build-arg=base=" + base + variant_buildargs
 # - scratch builds need extra perms per https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
 # - we do secure boot signing here, so provide the keys
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
              + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
-# Args for build-sealed (no base arg, it sets that itself)
-sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
 
 # The default target: build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
@@ -92,10 +91,10 @@ _build-from-package PATH:
     # Resolve to absolute path for podman volume mount
     # Use :z for SELinux relabeling
     pkg_path=$(realpath "{{PATH}}")
-    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
+    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}} {{buildargs}} .
 
 # Build a sealed image from current sources.
+# Compatibility alias because this is used in containers/composefs-rs CI right now
 build-sealed:
     @just --justfile {{justfile()}} variant=composefs-sealeduki-sdboot build
 
@@ -151,8 +150,7 @@ test-tmt *ARGS: build
 
 # Generate a local synthetic upgrade
 _build-upgrade-image:
-    cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}}-bin --from={{base_img}}-bin -
-    ./hack/build-sealed {{variant}} {{upgrade_img}}-bin {{upgrade_img}} {{sealed_buildargs}}
+    cat tmt/tests/Dockerfile.upgrade | podman build {{variant_buildargs}} -t {{upgrade_img}} --from={{base_img}} -
 
 # Assume the localhost/bootc image is up to date, and just run tests.
 # Useful for iterating on tests quickly.
