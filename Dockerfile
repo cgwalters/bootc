@@ -15,14 +15,10 @@ COPY . /src
 FROM scratch as packaging
 COPY contrib/packaging /
 
-FROM $base as base
-# Mark this as a test image (moved from --label build flag to fix layer caching)
-LABEL bootc.testimage="1"
-
 # This image installs build deps, pulls in our source code, and installs updated
 # bootc binaries in /out. The intention is that the target rootfs is extracted from /out
 # back into a final stage (without the build deps etc) below.
-FROM base as buildroot
+FROM $base as buildroot
 # Flip this off to disable initramfs code
 ARG initramfs=1
 # This installs our buildroot, and we want to cache it independently of the rest.
@@ -39,6 +35,31 @@ RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothom
 FROM buildroot as sdboot-content
 # Writes to /out
 RUN /src/contrib/packaging/configure-systemdboot download
+
+# We always do a "from scratch" build
+# https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
+# because this fixes https://github.com/containers/composefs-rs/issues/132
+# NOTE: Until we have https://gitlab.com/fedora/bootc/base-images/-/merge_requests/317
+#       this stage will end up capturing whatever RPMs we find at this time.
+# NOTE: This is using the *stock* bootc binary, not the one we want to build from
+#       local sources. We'll override it later.
+# NOTE: All your base belong to me.
+FROM $base as target-base
+RUN /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
+
+FROM scratch as base
+COPY --from=target-base /target-rootfs/ /
+# Note we don't do any customization here yet
+# Mark this as a test image
+LABEL bootc.testimage="1"
+# Otherwise standard metadata
+LABEL containers.bootc 1
+LABEL ostree.bootable 1
+# https://pagure.io/fedora-kiwi-descriptions/pull-request/52
+ENV container=oci
+# Optional labels that only apply when running this image as a container. These keep the default entry point running under systemd.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
 
 # NOTE: Every RUN instruction past this point should use `--network=none`; we want to ensure
 # all external dependencies are clearly delineated.
