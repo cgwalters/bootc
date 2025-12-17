@@ -65,8 +65,12 @@ ENV container=oci
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
 
+# -------------
+# external dependency cutoff point:
 # NOTE: Every RUN instruction past this point should use `--network=none`; we want to ensure
 # all external dependencies are clearly delineated.
+# This is verified in `cargo xtask check-buildsys`.
+# -------------
 
 FROM buildroot as build
 # Version for RPM build (optional, computed from git in Justfile)
@@ -75,7 +79,7 @@ ARG pkgversion
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
+RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
 FROM buildroot as sdboot-signed
 # The secureboot key and cert are passed via Justfile
@@ -91,11 +95,11 @@ FROM build as units
 # A place that we're more likely to be able to set xattrs
 VOLUME /var/tmp
 ENV TMPDIR=/var/tmp
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make install-unit-tests
+RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make install-unit-tests
 
 # This just does syntax checking
 FROM buildroot as validate
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make validate
+RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
 
 # Common base for final images: configures variant, rootfs, and injects extra content
 FROM base as final-common
@@ -105,13 +109,12 @@ RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
     --mount=type=bind,from=sdboot-signed,target=/run/sdboot-signed \
     /run/packaging/configure-variant "${variant}"
 ARG rootfs=""
-RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 COPY --from=packaging /usr-extras/ /usr/
 
 # Final target: installs pre-built packages from /run/packages volume mount.
 # Use with: podman build --target=final -v path/to/packages:/run/packages:ro
 FROM final-common as final
-RUN --mount=type=bind,from=packaging,target=/run/packaging \
-    --network=none \
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
     /run/packaging/install-rpm-and-setup /run/packages
-RUN bootc container lint --fatal-warnings
+RUN --network=none bootc container lint --fatal-warnings
