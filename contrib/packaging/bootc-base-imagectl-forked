@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+# NOTE! This is forked for bootc development purposes while we iterate on sealing
+
+import argparse
+import json
+import os
+import os.path as path
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+ARCH = os.uname().machine
+MANIFESTDIR = 'usr/share/doc/bootc-base-imagectl/manifests'
+
+def run_build_rootfs(args):
+    """
+    Regenerates a base image using a build configuration.
+    """
+    target = args.target
+    for fn in [f'{args.manifest}.yaml', f'{args.manifest}.hidden.yaml']:
+        manifest_path = f'/{MANIFESTDIR}/{fn}'
+        if os.path.exists(manifest_path):
+            break
+    else:
+        raise Exception(f"manifest not found: {args.manifest}")
+
+    # A fix for https://issues.redhat.com/browse/RHEL-108989
+    subprocess.check_call(['dnf', 'repolist'], stdout=subprocess.DEVNULL)
+
+    rpmostree_argv = ['rpm-ostree', 'compose', 'rootfs']
+
+    override_manifest = {}
+    tmp_ostree_repo = None
+    if args.install:
+        additional_pkgs = [shlex.quote(p) for p in set(args.install)]
+        if len(additional_pkgs) > 0:
+            override_manifest['packages'] = list(additional_pkgs)
+    if args.add_dir:
+        tmp_ostree_repo = tempfile.mkdtemp(dir='/var/tmp')
+        subprocess.check_call(['ostree', 'init', '--repo', tmp_ostree_repo, '--mode=bare'])
+        rpmostree_argv.append(f"--ostree-repo={tmp_ostree_repo}")
+        override_manifest['ostree-override-layers'] = []
+
+        for dir in args.add_dir:
+            base = os.path.basename(dir)
+            abs = os.path.realpath(dir)
+            # capture output to hide commit digest printed
+            subprocess.check_output(['ostree', 'commit', '--repo', tmp_ostree_repo, '-b', f'overlay/{base}', abs,
+                                     '--owner-uid=0', '--owner-gid=0', '--no-xattrs', '--mode-ro-executables'])
+            override_manifest['ostree-override-layers'].append(f'overlay/{base}')
+    if args.no_docs:
+        override_manifest['documentation'] = False
+    if args.recommends:
+        override_manifest['recommends'] = True
+    if args.no_initramfs:
+        override_manifest['no-initramfs'] = True
+    if args.sysusers:
+        override_manifest['sysusers'] = 'compose-forced'
+        passwd_mode = 'nobody' if args.nobody_99 else 'none'
+        override_manifest['variables'] = {'passwd_mode': passwd_mode}
+    if args.repo:
+        override_manifest['repos'] = args.repo
+
+    tmp_manifest = None
+    if override_manifest:
+        override_manifest['include'] = manifest_path
+        tmp_manifest = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.json', delete=False)
+        json.dump(override_manifest, tmp_manifest)
+        tmp_manifest.close()
+        manifest_path = tmp_manifest.name
+
+    tmp_lockfile = None
+    if args.lock:
+        lockfile = {'packages': {}}
+        for nevra in args.lock:
+            # we support passing either a NEVRA or a NEVR
+            name, ev, r_or_ra = nevra.rsplit('-', 2)
+            evr_or_evra = f'{ev}-{r_or_ra}'
+            field = 'evra' if r_or_ra.endswith(('.noarch', f'.{ARCH}')) else 'evr'
+            lockfile['packages'][name] = {field: evr_or_evra}
+
+        tmp_lockfile = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.json', delete=False)
+        json.dump(lockfile, tmp_lockfile)
+        tmp_lockfile.close()
+        rpmostree_argv.append(f"--lockfile={tmp_lockfile.name}")
+
+    try:
+        if args.cachedir != "":
+            rpmostree_argv.append(f"--cachedir={args.cachedir}")
+        # Assume we can mutate alternative roots
+        if args.source_root != '/':
+            rpmostree_argv.append(f'--source-root-rw={args.source_root}')
+        else:
+            # But we shouldn't need to mutate the default root
+            rpmostree_argv.append('--source-root=/')
+        rpmostree_argv.extend([manifest_path, target])
+        # Perform the build
+        subprocess.run(rpmostree_argv, check=True)
+        # Work around https://github.com/coreos/rpm-ostree/pull/5322
+        root_mode = os.lstat(target).st_mode
+        if (root_mode & stat.S_IXOTH) == 0:
+            print("Updating rootfs mode")
+            os.chmod(target, root_mode | (0o555))
+        # And run the bootc linter for good measure
+        subprocess.run([
+            'bootc',
+            'container',
+            'lint',
+            f'--rootfs={target}',
+        ], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing command: {e}")
+        sys.exit(1)
+    finally:
+        if tmp_lockfile is not None:
+            os.unlink(tmp_lockfile.name)
+        if tmp_manifest is not None:
+            os.unlink(tmp_manifest.name)
+        if tmp_ostree_repo:
+            shutil.rmtree(tmp_ostree_repo)
+
+    # Copy our own build configuration into the target if configured;
+    # this is used for the first stage build. But by default *secondary*
+    # builds don't get this.
+    if args.reinject:
+        for d in [MANIFESTDIR]:
+            dst = path.join(target, d)
+            print(f"Copying /{d} to {dst}")
+            shutil.copytree('/' + d, dst, symlinks=True)
+        for f in ['usr/libexec/bootc-base-imagectl']:
+            dst = path.join(target, f)
+            print(f"Copying /{f} to {dst}")
+            shutil.copy('/' + f, dst)
+
+def run_rechunk(args):
+    argv = [
+            'rpm-ostree',
+            'experimental',
+            'compose',
+            'build-chunked-oci']
+    if args.max_layers is not None:
+        argv.append(f"--max-layers={args.max_layers}")
+    argv.extend(['--bootc',
+            '--format-version=1',
+            f'--from={args.from_image}',
+            f'--output=containers-storage:{args.to_image}'])
+    try:
+        subprocess.run(argv, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing command: {e}")
+        sys.exit(1)
+
+def run_list(args):
+    d = '/' + MANIFESTDIR
+    for ent in sorted(os.listdir(d)):
+        name, ext = os.path.splitext(ent)
+        if ext != '.yaml' or name.endswith('.hidden'):
+            continue
+        fullpath = os.path.join(d, ent)
+        if os.path.islink(fullpath):
+            continue
+        o = subprocess.check_output(['rpm-ostree', 'compose', 'tree', '--print-only', fullpath])
+        manifest = json.loads(o)
+        description = manifest['metadata']['summary']
+        print(f"{name}: {description}")
+        print("---")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Operate on the build configuration for this container")
+    parser.add_argument("--args-file", help="File containing arguments to parse (one argument per line)", metavar='FILE')
+    subparsers = parser.add_subparsers(help='Subcommands', required=True)
+
+    build_rootfs = subparsers.add_parser('build-rootfs', help='Generate a container root filesystem')
+    build_rootfs.add_argument("--reinject", help="Also reinject the build configurations into the target", action='store_true')
+    build_rootfs.add_argument("--manifest", help="Use the specified manifest", action='store', default='default')
+    build_rootfs.add_argument("--install", help="Add a package", action='append', default=[], metavar='PACKAGE')
+    build_rootfs.add_argument("--cachedir", help="Cache repo metadata and RPMs in specified directory", action='store', default='')
+    build_rootfs.add_argument("--add-dir", help='Copy dir contents into the target', action='append', default=[], metavar='DIR')
+    build_rootfs.add_argument("--no-docs", help="Don't install documentation", action='store_true')
+    build_rootfs.add_argument("--recommends", help="Whether to install recommended packages", action='store_true')
+    build_rootfs.add_argument("--no-initramfs", help="Whether to generate an initramfs for the roots", action='store_true')
+    build_rootfs.add_argument("--sysusers", help="Run systemd-sysusers instead of injecting hardcoded passwd/group entries", action='store_true')
+    build_rootfs.add_argument("--nobody-99", help=argparse.SUPPRESS, action='store_true')
+    build_rootfs.add_argument("--repo", help="Enable specific repositories only", action='append', default=[], metavar='REPO')
+    build_rootfs.add_argument("--lock", help="Lock package to specific version; can be NEVRA or NEVR", action='append', default=[], metavar='NEVRA')
+    build_rootfs.add_argument("source_root", help="Path to the source root directory used for dnf configuration (default=/)", nargs='?', default='/')
+    build_rootfs.add_argument("target", help="Path to the target root directory that will be generated.")
+    build_rootfs.set_defaults(func=run_build_rootfs)
+
+    cmd_rechunk = subparsers.add_parser('rechunk', help="Generate a new container image with split, reproducible, chunked layers")
+    cmd_rechunk.add_argument("--max-layers", help="Configure the number of output layers")
+    cmd_rechunk.add_argument("from_image", help="Operate on this image in the container storage")
+    cmd_rechunk.add_argument("to_image", help="Output a new image to the container storage")
+    cmd_rechunk.set_defaults(func=run_rechunk)
+
+    cmd_list = subparsers.add_parser('list', help='List available manifests')
+    cmd_list.set_defaults(func=run_list)
+
+    args = parser.parse_args()
+    if args.args_file:
+        add_args = []
+        with open(args.args_file) as f:
+            for line in f:
+                add_args += [line.strip()]
+        args = parser.parse_args(sys.argv[1:] + add_args)
+
+    args.func(args)
+
+
