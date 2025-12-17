@@ -17,10 +17,8 @@
 
 # This image is just the base image plus our updated bootc binary
 base_img := "localhost/bootc"
-# Derives from the above and adds nushell, cloudinit etc.
-integration_img := base_img + "-integration"
 # Has a synthetic upgrade
-integration_upgrade_img := integration_img + "-upgrade"
+upgrade_img := base_img + "-upgrade"
 
 # ostree: The default
 # composefs-sealeduki-sdboot: A system with a sealed composefs using systemd-boot
@@ -57,8 +55,12 @@ sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_
 #
 # This first builds RPMs via the `package` target, then injects them
 # into the container image.
-build: package _keygen
+build: package _keygen && _pull-lbi-images
     @just _build-from-package target/packages
+
+# Pull images used by hack/lbi
+_pull-lbi-images:
+    podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
 
 # Compute SOURCE_DATE_EPOCH and VERSION from git for reproducible builds.
 # Outputs shell variable assignments that can be eval'd.
@@ -115,28 +117,13 @@ package: _packagecontainer
     chmod a+r target/packages/*.rpm
     podman rmi localhost/bootc-pkg
 
-# Pull images used by hack/lbi
-_pull-lbi-images:
-    podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
-
-# This container image has additional testing content and utilities
-build-integration-test-image: build _pull-lbi-images
-    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
-
-# Build integration test image using pre-existing packages from PATH
-build-integration-test-image-from-package PATH: _keygen _pull-lbi-images
-    @just _build-from-package {{PATH}}
-    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
-
 # Build+test using the `composefs-sealeduki-sdboot` variant.
 test-composefs:
     just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
 
 # Only used by ci.yml right now
-build-install-test-image: build-integration-test-image
-    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-install -f Containerfile.drop-lbis
+build-install-test-image: build
+    cd hack && podman build {{base_buildargs}} -t {{base_img}}-install -f Containerfile.drop-lbis
 
 # These tests accept the container image as input, and may spawn it.
 run-container-external-tests:
@@ -158,28 +145,29 @@ validate:
 #
 # To run an individual test, pass it as an argument like:
 # `just test-tmt readonly`
-test-tmt *ARGS: build-integration-test-image _build-upgrade-image
+test-tmt *ARGS: build
+    @just _build-upgrade-image
     @just test-tmt-nobuild {{ARGS}}
 
 # Generate a local synthetic upgrade
 _build-upgrade-image:
-    cat tmt/tests/Dockerfile.upgrade | podman build -t {{integration_upgrade_img}}-bin --from={{integration_img}}-bin -
-    ./hack/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}} {{sealed_buildargs}}
+    cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}}-bin --from={{base_img}}-bin -
+    ./hack/build-sealed {{variant}} {{upgrade_img}}-bin {{upgrade_img}} {{sealed_buildargs}}
 
-# Assume the localhost/bootc-integration image is up to date, and just run tests.
+# Assume the localhost/bootc image is up to date, and just run tests.
 # Useful for iterating on tests quickly.
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{integration_upgrade_img}} {{integration_img}} {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
 
 # Cleanup all test VMs created by tmt tests
 tmt-vm-cleanup:
     bcvk libvirt rm --stop --force --label bootc.test=1
 
 # Run tests (unit and integration) that are containerized
-test-container: build-units build-integration-test-image
+test-container: build build-units
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
     # Pass these through for cross-checking
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{integration_img}} bootc-integration-tests container
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{base_img}} bootc-integration-tests container
 
 # Remove all container images built (locally) via this Justfile, by matching a label
 clean-local-images:
