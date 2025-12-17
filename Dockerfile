@@ -83,18 +83,9 @@ ARG rootfs=""
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 COPY --from=packaging /usr-extras/ /usr/
 
-# Default target for source builds (just build)
-# Installs packages from the internal build stage
+# Final target: installs pre-built packages from /run/packages volume mount.
+# Use with: podman build --target=final -v path/to/packages:/run/packages:ro
 FROM final-common as final
-RUN --mount=type=bind,from=packaging,target=/run/packaging \
-    --mount=type=bind,from=build,target=/build-output \
-    --network=none \
-    /run/packaging/install-rpm-and-setup /build-output/out
-RUN bootc container lint --fatal-warnings
-
-# Alternative target for pre-built packages (CI workflow)
-# Use with: podman build --target=final-from-packages -v path/to/packages:/run/packages:ro
-FROM final-common as final-from-packages
 RUN --mount=type=bind,from=packaging,target=/run/packaging \
     --network=none \
     /run/packaging/install-rpm-and-setup /run/packages
