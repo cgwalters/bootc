@@ -123,7 +123,7 @@ package: _packagecontainer
     podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C target/packages/ -xvf -
     chmod a+rx target target/packages
     chmod a+r target/packages/*.rpm
-    podman rmi localhost/bootc-pkg
+    # Keep localhost/bootc-pkg for layer caching; use `just clean-local-images` to reclaim space
 
 # Build+test using the `composefs-sealeduki-sdboot` variant.
 test-composefs:
