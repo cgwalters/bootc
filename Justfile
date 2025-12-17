@@ -73,21 +73,24 @@ fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
 #
-# The Dockerfile builds RPMs internally in its 'build' stage, so we don't need
-# to call 'package' first. This avoids cache invalidation from external files.
-build: _keygen
-    #!/bin/bash
-    set -xeuo pipefail
-    eval $(just _git-build-vars)
-    podman build {{base_buildargs}} --target=final \
-        --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
-        --build-arg=pkgversion=${VERSION} \
-        -t {{base_img}}-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
+# This first builds RPMs via the `package` target, then injects them
+# into the container image.
+build: package _keygen
+    @just _build-from-package target/packages
 
 # Generate Secure Boot keys (only for our own CI/testing)
 _keygen:
     ./hack/generate-secureboot-keys
+
+# Internal helper: build container image from packages at PATH
+_build-from-package PATH:
+    #!/bin/bash
+    set -xeuo pipefail
+    # Resolve to absolute path for podman volume mount
+    # Use :z for SELinux relabeling
+    pkg_path=$(realpath "{{PATH}}")
+    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
+    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
 
 # Build a sealed image from current sources.
 build-sealed:
@@ -111,34 +114,6 @@ package: _packagecontainer
     chmod a+r target/packages/*.rpm
     podman rmi localhost/bootc-pkg
 
-# Copy pre-existing packages from PATH into target/packages/
-# Note: This is mainly for CI artifact extraction; build-from-package
-# now uses volume mounts directly instead of copying to target/packages/.
-copy-packages-from PATH:
-    #!/bin/bash
-    set -xeuo pipefail
-    if ! compgen -G "{{PATH}}/*.rpm" > /dev/null; then
-        echo "Error: No packages found in {{PATH}}" >&2
-        exit 1
-    fi
-    mkdir -p target/packages
-    rm -vf target/packages/*.rpm
-    cp -v {{PATH}}/*.rpm target/packages/
-    chmod a+rx target target/packages
-    chmod a+r target/packages/*.rpm
-
-# Build the container image using pre-existing packages from PATH
-# Uses the 'final-from-packages' target with a volume mount to inject packages,
-# avoiding Docker context cache invalidation issues.
-build-from-package PATH: _keygen
-    #!/bin/bash
-    set -xeuo pipefail
-    # Resolve to absolute path for podman volume mount
-    # Use :z for SELinux relabeling
-    pkg_path=$(realpath "{{PATH}}")
-    podman build {{base_buildargs}} --target=final-from-packages -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
-
 # Pull images used by hack/lbi
 _pull-lbi-images:
     podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
@@ -149,8 +124,8 @@ build-integration-test-image: build _pull-lbi-images
     ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
 
 # Build integration test image using pre-existing packages from PATH
-build-integration-test-image-from-package PATH: _pull-lbi-images
-    @just build-from-package {{PATH}}
+build-integration-test-image-from-package PATH: _keygen _pull-lbi-images
+    @just _build-from-package {{PATH}}
     cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
     ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
 
