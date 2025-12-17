@@ -8,7 +8,11 @@
 # Rules written here are *often* used by the Github Action flows,
 # and should support being configurable where that makes sense (e.g.
 # the `build` rule supports being provided a base image).
-
+#
+# By default the layering should be thus:
+# Github Actions -> Justfile -> podman -> make -> rustc
+#                            -> podman -> dnf|apt ...
+#                            -> cargo xtask
 # --------------------------------------------------------------------
 
 # This image is just the base image plus our updated bootc binary
