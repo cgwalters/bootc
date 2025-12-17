@@ -38,7 +38,7 @@ fn delete_ostree_deployments(sh: &Shell, image: &str) -> Result<(), anyhow::Erro
     if !Path::new("/ostree/deploy/").exists() {
         return Ok(());
     }
-    let mounts = &["-v", "/ostree:/ostree", "-v", "/boot:/boot"];
+    let mounts = &["-v", "/ostree:/sysroot/ostree", "-v", "/boot:/boot"];
     cmd!(
         sh,
         "sudo {BASE_ARGS...} {mounts...} {image} bootc state wipe-ostree"
