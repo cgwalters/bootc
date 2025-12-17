@@ -358,9 +358,20 @@ pub(crate) enum ContainerOpts {
         #[clap(long)]
         no_truncate: bool,
     },
-    /// Output the bootable composefs digest.
+    /// Output the bootable composefs digest for a directory.
     #[clap(hide = true)]
     ComputeComposefsDigest {
+        /// Path to the filesystem root
+        #[clap(default_value = "/target")]
+        path: Utf8PathBuf,
+
+        /// Additionally generate a dumpfile written to the target path
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
+    },
+    /// Output the bootable composefs digest from container storage.
+    #[clap(hide = true, name = "compute-composefs-digest-from-storage")]
+    ComputeComposefsDigestFromStorage {
         /// Additionally generate a dumpfile written to the target path
         #[clap(long)]
         write_dumpfile_to: Option<Utf8PathBuf>,
@@ -1499,6 +1510,49 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
             ContainerOpts::ComputeComposefsDigest {
+                path,
+                write_dumpfile_to,
+            } => {
+                if path.as_str() == "/" {
+                    anyhow::bail!(
+                        "Computing composefs-digest on '/' is not supported at this time"
+                    );
+                }
+
+                // Allocate a tempdir for the repo
+                let td = tempdir_in("/var/tmp")?;
+                let td = td.path();
+                let td = &Dir::open_ambient_dir(td, cap_std::ambient_authority())?;
+
+                td.create_dir("repo")?;
+                let repo = td.open_dir("repo")?;
+                let mut repo =
+                    ComposefsRepository::open_path(&repo, ".").context("Init cfs repo")?;
+                // We don't need to hard require verity on the *host* system, we're just computing a checksum here
+                repo.set_insecure(true);
+                let repo = Arc::new(repo);
+
+                // Read filesystem from path, transform for boot, compute digest
+                let mut fs = composefs::fs::read_filesystem(
+                    rustix::fs::CWD,
+                    path.as_std_path(),
+                    Some(&repo),
+                    false,
+                )?;
+                fs.transform_for_boot(&repo).context("Preparing for boot")?;
+                let id = fs.compute_image_id();
+                println!("{}", id.to_hex());
+
+                if let Some(dumpfile_path) = write_dumpfile_to.as_deref() {
+                    let mut w = File::create(dumpfile_path)
+                        .with_context(|| format!("Opening {dumpfile_path}"))
+                        .map(BufWriter::new)?;
+                    dumpfile::write_dumpfile(&mut w, &fs).context("Writing dumpfile")?;
+                }
+
+                Ok(())
+            }
+            ContainerOpts::ComputeComposefsDigestFromStorage {
                 write_dumpfile_to,
                 image,
             } => {
