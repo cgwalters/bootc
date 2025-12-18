@@ -8,6 +8,7 @@ set -euo pipefail
 mkdir -p /var/tmp
 
 sysroot=/run/host
+repo="${sysroot}/ostree/repo"
 # Current stable image fixture
 image=quay.io/fedora/fedora-coreos:testing-devel
 imgref=ostree-unverified-registry:${image}
@@ -112,11 +113,10 @@ systemd-run -dP --wait skopeo copy containers-storage:localhost/fcos-derived "${
 systemd-run -dP --wait skopeo copy "${derived_img}" "${derived_img_dir}"
 
 # Prune to reset state
-ostree refs ostree/container/image --delete
+ostree --repo="${repo}" refs ostree/container/image --delete
 
-repo="${sysroot}/ostree/repo"
 images=$(ostree container image list --repo "${repo}" | wc -l)
-test "${images}" -eq 1
+test "${images}" -eq 0
 ostree container image deploy --sysroot "${sysroot}" \
         --stateroot "${stateroot}" --imgref ostree-unverified-image:"${derived_img}"
 imgref=$(ostree refs --repo=${repo} ostree/container/image | head -1)
