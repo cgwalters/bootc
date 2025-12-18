@@ -91,7 +91,7 @@ _build-from-package PATH:
     # Resolve to absolute path for podman volume mount
     # Use :z for SELinux relabeling
     pkg_path=$(realpath "{{PATH}}")
-    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}} {{buildargs}} .
+    podman build -v "${pkg_path}":/run/packages:ro,z -t {{base_img}} {{buildargs}} .
 
 # Build a sealed image from current sources.
 # Compatibility alias because this is used in containers/composefs-rs CI right now

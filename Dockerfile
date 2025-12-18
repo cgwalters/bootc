@@ -62,22 +62,7 @@ CMD ["/sbin/init"]
 # This layer contains things which aren't in the default image and may
 # be used for sealing images in particular.
 FROM base as tools
-RUN <<EORUN
-set -xeuo pipefail
-. /usr/lib/os-release
-case "${ID}${ID_LIKE:-}" in
-  "*centos*")
-    # Enable EPEL for sbsigntools
-    dnf -y install epel-release
-    ;;
-esac
-dnf -y install systemd-ukify sbsigntools
-# And in the sealing case, we're going to inject and sign systemd-boot
-# into the target image.
-mkdir -p /out
-cd /out
-dnf -y download systemd-boot-unsigned
-EORUN
+RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/initialize-sealing-tools
 
 # -------------
 # external dependency cutoff point:
@@ -100,19 +85,20 @@ FROM tools as sdboot-signed
 # The secureboot key and cert are passed via Justfile
 # We write the signed binary into /out
 RUN --network=none \
-    --mount=type=bind,from=tools,target=/run/sdboot-package \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert <<EORUN
 set -xeuo pipefail
+
 sdboot=$(ls /usr/lib/systemd/boot/efi/systemd-boot*.efi)
 sdboot_bn=$(basename ${sdboot})
 mkdir -p /out
-rpm -Uvh /run/sdboot-package/out/*.rpm
+# Note we just get the binary here to sign it
+rpm2cpio /run/sdboot-package/out/*.rpm | cpio -div
 # Sign with sbsign using db certificate and key
 sbsign --key /run/secrets/secureboot_key \
-       --cert /run/secrets/secureboot_cert \
-       --output /out/${sdboot_bn} \
-       /${sdboot}
+   --cert /run/secrets/secureboot_cert \
+   --output /out/${sdboot_bn} \
+   /${sdboot}
 ls -al /out/${sdboot_bn}
 EORUN
 
@@ -134,20 +120,37 @@ FROM buildroot as validate
 RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
 
 # ----
-# Final image assembly
-# Common base for final images: configures variant, rootfs, and injects extra content
+# Stages for the final image
 # ----
-FROM base
-# Install our built bootc package
-RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
-    /run/packaging/install-rpm-and-setup /run/packages
+
+# Perform all filesystem transformations except generating the sealed UKI (if configured)
+FROM base as base-penultimate
 ARG variant
+# Switch to a signed systemd-boot, if configured
 RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
-    --mount=type=bind,from=sdboot-content,target=/run/sdboot-content \
     --mount=type=bind,from=sdboot-signed,target=/run/sdboot-signed \
-    /run/packaging/configure-variant "${variant}"
+if test ${variant} = "composefs-sealeduki-sdboot"; then
+  /run/packaging/switch-to-sdboot /run/sdboot-signed
+fi
+# Configure the rootfs
 ARG rootfs=""
-RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
+    /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+# Override with our built package
+RUN --network=none \
+    --mount=type=bind,from=packaging,target=/run/packaging \
+    /run/packaging/install-rpm-and-setup /run/packages
+# Inject some other configuration
 COPY --from=packaging /usr-extras/ /usr/
+
+# And now the final image
+FROM base-penultimate
+# Generate a sealed UKI, if configured
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
+    --mount=type=bind,from=base-penultimate,target=/run/target \
+    --mount=type=bind,from=sdboot-signed,target=/run/sdboot-signed \
+if test "${variant}" = "composefs-sealeduki-sdboot"; then
+  /run/packaging/seal-uki /run/target
+fi
 # And finally, test our linting
 RUN --network=none bootc container lint --fatal-warnings

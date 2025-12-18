@@ -1,0 +1,33 @@
+#!/bin/bash
+# Generate a sealed UKI
+set -xeuo pipefail
+
+dn=$(dirname $0)
+
+# Path to the desired root filesystem
+target=$1
+shift
+# Write to this directory
+output=$1
+shift
+secrets=$1
+shift
+
+composefs_digest=$(bootc internals compute-composefs-digest ${target})
+# enforcing=0: https://github.com/bootc-dev/bootc/issues/1826
+# Other kargs: we should pick them up from /usr/lib/bootc/kargs.d
+cmdline="composefs=${COMPOSEFS_FSVERITY} console=ttyS0,115200n8 console=hvc0 enforcing=0 rw"
+
+kver=$(cd ${target}usr/lib/modules && echo *)
+ukify build \
+  --linux "${target}usr/lib/modules/$kver/vmlinuz" \
+  --initrd "${target}usr/lib/modules/$kver/initramfs.img" \
+  --uname="${kver}" \
+  --cmdline "${cmdline}" \
+  --os-release "@${target}usr/lib/os-release" \
+  --signtool sbsign \
+  --secureboot-private-key "${secrets}/secureboot_key" \
+  --secureboot-certificate "${secrets}/secureboot_cert" \
+  --measure \
+  --json pretty \
+  --output "${output}/$kver.efi"

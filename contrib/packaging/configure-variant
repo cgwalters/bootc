@@ -14,16 +14,7 @@ fi
 # Handle variant-specific configuration
 case "${VARIANT}" in
   *-sdboot)
-    # Install systemd-boot and remove bootupd;
-    # We downloaded this in an earlier phase
-    sdboot=$(ls /usr/lib/systemd/boot/efi/systemd-boot*.efi)
-    sdboot_bn=$(basename ${sdboot})
-    rpm -Uvh /run/sdboot-content/out/*.rpm
-      # And override with our signed binary
-    install -m 0644 /run/sdboot-signed/out/${sdboot_bn} /${sdboot}
 
-    # Uninstall bootupd
-    rpm -e bootupd
   ;;
   # Future variants can be added here
   # For Debian support, this could check package manager type and use apt instead
