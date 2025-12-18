@@ -27,25 +27,13 @@ pub(crate) struct Kernel {
 
 /// Find the kernel in a container image root directory.
 ///
-/// This function first attempts to find a traditional kernel layout with
-/// `/usr/lib/modules/<version>/vmlinuz`. If that doesn't exist, it falls back
-/// to looking for a UKI in `/boot/EFI/Linux/*.efi`.
+/// This function first attempts to find a UKI in `/boot/EFI/Linux/*.efi`.
+/// If that doesn't exist, it falls back to looking for a traditional kernel
+/// layout with `/usr/lib/modules/<version>/vmlinuz`.
 ///
 /// Returns `None` if no kernel is found.
 pub(crate) fn find_kernel(root: &Dir) -> Result<Option<Kernel>> {
-    // First, try to find a traditional kernel via ostree_ext
-    if let Some(kernel_dir) = ostree_ext::bootabletree::find_kernel_dir_fs(root)? {
-        let version = kernel_dir
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("kernel dir should have a file name: {kernel_dir}"))?
-            .to_owned();
-        return Ok(Some(Kernel {
-            version,
-            unified: false,
-        }));
-    }
-
-    // Fall back to checking for a UKI
+    // First, try to find a UKI
     if let Some(uki_filename) = find_uki_filename(root)? {
         let version = uki_filename
             .strip_suffix(".efi")
@@ -54,6 +42,18 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<Kernel>> {
         return Ok(Some(Kernel {
             version,
             unified: true,
+        }));
+    }
+
+    // Fall back to checking for a traditional kernel via ostree_ext
+    if let Some(kernel_dir) = ostree_ext::bootabletree::find_kernel_dir_fs(root)? {
+        let version = kernel_dir
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("kernel dir should have a file name: {kernel_dir}"))?
+            .to_owned();
+        return Ok(Some(Kernel {
+            version,
+            unified: false,
         }));
     }
 
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_kernel_traditional_takes_precedence() -> Result<()> {
+    fn test_find_kernel_uki_takes_precedence() -> Result<()> {
         let tempdir = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         // Both traditional and UKI exist
         tempdir.create_dir_all("usr/lib/modules/6.12.0-100.fc41.x86_64")?;
@@ -142,9 +142,9 @@ mod tests {
         tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", b"fake uki")?;
 
         let kernel = find_kernel(&tempdir)?.expect("should find kernel");
-        // Traditional kernel should take precedence
-        assert_eq!(kernel.version, "6.12.0-100.fc41.x86_64");
-        assert!(!kernel.unified);
+        // UKI should take precedence
+        assert_eq!(kernel.version, "fedora-6.12.0");
+        assert!(kernel.unified);
         Ok(())
     }
 

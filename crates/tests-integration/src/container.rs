@@ -24,7 +24,7 @@ pub(crate) fn test_bootc_status() -> Result<()> {
 pub(crate) fn test_bootc_container_inspect() -> Result<()> {
     let sh = Shell::new()?;
     let inspect: serde_json::Value =
-        serde_json::from_str(&cmd!(sh, "bootc container inspect").read()?)?;
+        serde_json::from_str(&cmd!(sh, "bootc container inspect --json").read()?)?;
 
     // check kargs processing
     let kargs = inspect.get("kargs").unwrap().as_array().unwrap();

@@ -16,7 +16,7 @@ The command outputs a JSON object with the following fields:
 
 - `kargs`: An array of kernel arguments embedded in the container image.
 - `kernel`: An object containing kernel information (or `null` if no kernel is found):
-  - `version`: The kernel version identifier. For traditional kernels, this is derived from the `/usr/lib/modules/<version>` directory name (equivalent to `uname -r`). For UKI images, this is is the UKI filename without the `.efi` extension - which should usually be the same as the uname.
+  - `version`: The kernel version identifier. For vmlinuz kernels, this is derived from the `/usr/lib/modules/<version>` directory name (equivalent to `uname -r`). For UKI images, this is the UKI filename without the `.efi` extension - which should usually be the same as the uname.
   - `unified`: A boolean indicating whether the kernel is packaged as a UKI (Unified Kernel Image).
 
 # OPTIONS
@@ -28,6 +28,19 @@ The command outputs a JSON object with the following fields:
 
     Default: /
 
+**--json**
+
+    Output in JSON format
+
+**--format**=*FORMAT*
+
+    The output format
+
+    Possible values:
+    - humanreadable
+    - yaml
+    - json
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES
@@ -36,7 +49,7 @@ Inspect container image metadata:
 
     bootc container inspect
 
-Example output (traditional kernel):
+Example output (vmlinuz kernel):
 
 ```json
 {

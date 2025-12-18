@@ -1,6 +1,7 @@
 //! The definition for host system state.
 
 use std::fmt::Display;
+
 use std::str::FromStr;
 
 use anyhow::Result;
