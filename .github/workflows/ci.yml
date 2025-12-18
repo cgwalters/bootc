@@ -189,7 +189,7 @@ jobs:
 
       - name: Build container
         run: |
-          just build-from-packages target/packages
+          BOOTC_SKIP_PACKAGE=1 just build
           # Extra cross-check (duplicating the integration test) that we're using the right base
           used_vid=$(podman run --rm localhost/bootc bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
           test ${{ matrix.test_os }} = "${used_vid}"
