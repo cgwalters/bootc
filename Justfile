@@ -52,17 +52,18 @@ sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_
 # The default target: build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
-#
-# This first builds RPMs via the `package` target, then injects them
 # into the container image.
+#
+# Note you can set `BOOTC_SKIP_PACKAGE=1` in the environment to bypass this stage. 
 build: package _keygen && _pull-lbi-images
-    @just _build-from-package target/packages
-
-# Build container image using pre-existing packages from PATH.
-# This skips the package build step - useful when packages are provided
-# externally (e.g. downloaded from CI artifacts).
-build-from-packages PATH: _keygen && _pull-lbi-images
-    @just _build-from-package {{PATH}}
+    #!/bin/bash
+    set -xeuo pipefail
+    test -d target/packages
+    # Resolve to absolute path for podman volume mount
+    # Use :z for SELinux relabeling
+    pkg_path=$(realpath target/packages)
+    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
+    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
 
 # Pull images used by hack/lbi
 _pull-lbi-images:
@@ -93,36 +94,32 @@ fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 _keygen:
     ./hack/generate-secureboot-keys
 
-# Internal helper: build container image from packages at PATH
-_build-from-package PATH:
-    #!/bin/bash
-    set -xeuo pipefail
-    # Resolve to absolute path for podman volume mount
-    # Use :z for SELinux relabeling
-    pkg_path=$(realpath "{{PATH}}")
-    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
-
 # Build a sealed image from current sources.
 build-sealed:
     @just --justfile {{justfile()}} variant=composefs-sealeduki-sdboot build
 
-# Build packages (e.g. RPM) using a container buildroot
-_packagecontainer:
+# Build packages (e.g. RPM) into target/packages/
+# Any old packages will be removed.
+# Set BOOTC_SKIP_PACKAGE=1 in the environment to bypass this stage. We don't
+# yet have an accurate ability to avoid rebuilding this in CI yet.
+package:
     #!/bin/bash
     set -xeuo pipefail
+    packages=target/packages
+    if test -n "${BOOTC_SKIP_PACKAGE:-}"; then
+        if test '!' -d "${packages}"; then
+            echo "BOOTC_SKIP_PACKAGE is set, but missing ${packages}" 1>&2; exit 1
+        fi
+        exit 0
+    fi
     eval $(just _git-build-vars)
     echo "Building RPM with version: ${VERSION}"
     podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
-
-# Build packages (e.g. RPM) into target/packages/
-# Any old packages will be removed.
-package: _packagecontainer
-    mkdir -p target/packages
-    rm -vf target/packages/*.rpm
-    podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C target/packages/ -xvf -
-    chmod a+rx target target/packages
-    chmod a+r target/packages/*.rpm
+    mkdir -p "${packages}"
+    rm -vf "${packages}"/*.rpm
+    podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C "${packages}"/ -xvf -
+    chmod a+rx target "${packages}"
+    chmod a+r "${packages}"/*.rpm
     # Keep localhost/bootc-pkg for layer caching; use `just clean-local-images` to reclaim space
 
 # Build+test using the `composefs-sealeduki-sdboot` variant.
