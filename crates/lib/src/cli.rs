@@ -1477,7 +1477,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let root = &Dir::open_ambient_dir(&rootfs, cap_std::ambient_authority())?;
                 let kargs = crate::bootc_kargs::get_kargs_in_root(root, std::env::consts::ARCH)?;
                 let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
-                let inspect = crate::spec::ContainerInspect { kargs };
+                let kernel = crate::kernel::find_kernel(root)?;
+                let inspect = crate::spec::ContainerInspect { kargs, kernel };
                 serde_json::to_writer_pretty(std::io::stdout().lock(), &inspect)?;
                 Ok(())
             }
