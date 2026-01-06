@@ -290,13 +290,15 @@ impl<'a, W: std::io::Write> OstreeTarWriter<'a, W> {
         // first thing.
         self.append_dir(rootpath, metadata)?;
 
-        // Now, we create sysroot/ and everything under it
-        self.write_repo_structure()?;
+        if !self.options.raw {
+            // Now, we create sysroot/ and everything under it
+            self.write_repo_structure()?;
 
-        self.append_commit_object()?;
+            self.append_commit_object()?;
 
-        // The ostree dirmeta object for the root.
-        self.append(ostree::ObjectType::DirMeta, metadata_checksum, &metadata_v)?;
+            // The ostree dirmeta object for the root.
+            self.append(ostree::ObjectType::DirMeta, metadata_checksum, &metadata_v)?;
+        }
 
         // Recurse and write everything else.
         self.append_dirtree(
@@ -642,6 +644,35 @@ impl<'a, W: std::io::Write> OstreeTarWriter<'a, W> {
     }
 }
 
+/// Append xattrs to the tar stream as PAX extensions, excluding security.selinux
+/// which doesn't become visible in container runtimes anyway.
+/// https://github.com/containers/storage/blob/0d4a8d2aaf293c9f0464b888d932ab5147a284b9/pkg/archive/archive.go#L85
+#[context("Writing tar xattrs")]
+fn append_pax_xattrs<W: std::io::Write>(
+    out: &mut tar::Builder<W>,
+    xattrs: &glib::Variant,
+) -> Result<()> {
+    let v = xattrs.data_as_bytes();
+    let v = v.try_as_aligned().unwrap();
+    let v = gvariant::gv!("a(ayay)").cast(v);
+    let mut pax_extensions = Vec::new();
+    for entry in v {
+        let (k, v) = entry.to_tuple();
+        let k = CStr::from_bytes_with_nul(k).unwrap();
+        let k = k
+            .to_str()
+            .with_context(|| format!("Found non-UTF8 xattr: {k:?}"))?;
+        if k == SECURITY_SELINUX_XATTR {
+            continue;
+        }
+        pax_extensions.push((format!("SCHILY.xattr.{k}"), v));
+    }
+    if !pax_extensions.is_empty() {
+        out.append_pax_extensions(pax_extensions.iter().map(|(k, v)| (k.as_str(), *v)))?;
+    }
+    Ok(())
+}
+
 /// Recursively walk an OSTree commit and generate data into a `[tar::Builder]`
 /// which contains all of the metadata objects, as well as a hardlinked
 /// stream that looks like a checkout.  Extended attributes are stored specially out
@@ -652,14 +683,141 @@ fn impl_export<W: std::io::Write>(
     out: &mut tar::Builder<W>,
     options: ExportOptions,
 ) -> Result<()> {
+    if options.raw {
+        return impl_raw_export(repo, commit_checksum, out);
+    }
     let writer = &mut OstreeTarWriter::new(repo, commit_checksum, out, options)?;
     writer.write_commit()?;
     Ok(())
 }
 
+/// Export an ostree commit as a "raw" tar stream - just the filesystem content
+/// with `/usr/etc` -> `/etc` remapping, without ostree repository structure.
+fn impl_raw_export<W: std::io::Write>(
+    repo: &ostree::Repo,
+    commit_checksum: &str,
+    out: &mut tar::Builder<W>,
+) -> Result<()> {
+    let cancellable = gio::Cancellable::NONE;
+    let (root, _) = repo.read_commit(commit_checksum, cancellable)?;
+    let root = root
+        .downcast::<ostree::RepoFile>()
+        .expect("read_commit returns RepoFile");
+    root.ensure_resolved()?;
+    raw_export_dir(repo, out, &root, Utf8Path::new(""))
+}
+
+/// Recursively export a directory for raw export mode.
+fn raw_export_dir<W: std::io::Write>(
+    repo: &ostree::Repo,
+    out: &mut tar::Builder<W>,
+    dir: &ostree::RepoFile,
+    path: &Utf8Path,
+) -> Result<()> {
+    let cancellable = gio::Cancellable::NONE;
+    let queryattrs = "standard::name,standard::type";
+    let queryflags = gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS;
+    let e = dir.enumerate_children(queryattrs, queryflags, cancellable)?;
+
+    while let Some(info) = e.next_file(cancellable)? {
+        let name = info.name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid UTF-8 filename: {:?}", name))?;
+        let child_path = path.join(name);
+
+        // Apply /usr/etc -> /etc remapping
+        let output_path = map_path_v1(&child_path);
+
+        // Get the child and downcast to RepoFile
+        let child = dir.child(name);
+        let child = child
+            .downcast::<ostree::RepoFile>()
+            .expect("child of RepoFile is RepoFile");
+        child.ensure_resolved()?;
+
+        let file_type = info.file_type();
+        match file_type {
+            gio::FileType::Regular | gio::FileType::SymbolicLink => {
+                // Get the checksum and load the file via the repo
+                let checksum = child.checksum();
+                let (instream, meta, xattrs) = repo.load_file(&checksum, cancellable)?;
+
+                // Write xattrs as PAX extensions (before the file entry)
+                append_pax_xattrs(out, &xattrs)?;
+
+                let mut h = tar::Header::new_gnu();
+                h.set_uid(meta.attribute_uint32("unix::uid") as u64);
+                h.set_gid(meta.attribute_uint32("unix::gid") as u64);
+                // Filter out the file type bits from mode for tar
+                h.set_mode(meta.attribute_uint32("unix::mode") & !libc::S_IFMT);
+
+                if let Some(instream) = instream {
+                    // Regular file
+                    h.set_entry_type(tar::EntryType::Regular);
+                    h.set_size(meta.size() as u64);
+                    let mut instream = BufReader::with_capacity(BUF_CAPACITY, instream.into_read());
+                    out.append_data(&mut h, output_path, &mut instream)
+                        .with_context(|| format!("Writing {child_path}"))?;
+                } else {
+                    // Symlink
+                    h.set_entry_type(tar::EntryType::Symlink);
+                    h.set_size(0);
+
+                    let target = meta
+                        .symlink_target()
+                        .ok_or_else(|| anyhow!("Missing symlink target for {child_path}"))?;
+                    let target = target
+                        .to_str()
+                        .ok_or_else(|| anyhow!("Invalid UTF-8 symlink target: {target:?}"))?;
+
+                    // Handle "denormal" symlinks that contain "//"
+                    if symlink_is_denormal(target) {
+                        h.set_link_name_literal(target)
+                            .with_context(|| format!("Setting symlink target for {child_path}"))?;
+                        out.append_data(&mut h, output_path, &mut std::io::empty())
+                            .with_context(|| format!("Writing symlink {child_path}"))?;
+                    } else {
+                        out.append_link(&mut h, output_path, target)
+                            .with_context(|| format!("Writing symlink {child_path}"))?;
+                    }
+                }
+            }
+            gio::FileType::Directory => {
+                // For directories, query metadata directly from the RepoFile
+                let dir_meta_checksum = child.tree_get_metadata_checksum().ok_or_else(|| {
+                    anyhow!("Missing metadata checksum for directory {child_path}")
+                })?;
+                let meta_v = repo.load_variant(ostree::ObjectType::DirMeta, &dir_meta_checksum)?;
+                let metadata =
+                    ostree::DirMetaParsed::from_variant(&meta_v).context("Parsing dirmeta")?;
+
+                let mut h = tar::Header::new_gnu();
+                h.set_entry_type(tar::EntryType::Directory);
+                h.set_uid(metadata.uid as u64);
+                h.set_gid(metadata.gid as u64);
+                h.set_mode(metadata.mode & !libc::S_IFMT);
+                h.set_size(0);
+                out.append_data(&mut h, output_path, std::io::empty())
+                    .with_context(|| format!("Writing directory {child_path}"))?;
+
+                raw_export_dir(repo, out, &child, &child_path)?;
+            }
+            o => anyhow::bail!("Unsupported file type {o:?} for {child_path}"),
+        }
+    }
+    Ok(())
+}
+
 /// Configuration for tar export.
 #[derive(Debug, PartialEq, Eq, Default)]
-pub struct ExportOptions;
+pub struct ExportOptions {
+    /// If true, output a "raw" filesystem tree without the ostree repository
+    /// structure (no /sysroot/ostree/repo, no commit/dirtree/dirmeta objects,
+    /// no hardlinks into the object store). The `/usr/etc` -> `/etc` remapping
+    /// is still performed.
+    pub raw: bool,
+}
 
 /// Export an ostree commit to an (uncompressed) tar archive stream.
 #[context("Exporting commit")]
@@ -719,7 +877,7 @@ pub(crate) fn export_chunk<W: std::io::Write>(
 ) -> Result<()> {
     // For chunking, we default to format version 1
     #[allow(clippy::needless_update)]
-    let opts = ExportOptions;
+    let opts = ExportOptions::default();
     let writer = &mut OstreeTarWriter::new(repo, commit, out, opts)?;
     writer.write_repo_structure()?;
     write_chunk(writer, chunk, create_parent_dirs)
@@ -734,7 +892,7 @@ pub(crate) fn export_final_chunk<W: std::io::Write>(
     out: &mut tar::Builder<W>,
     create_parent_dirs: bool,
 ) -> Result<()> {
-    let options = ExportOptions;
+    let options = ExportOptions::default();
     let writer = &mut OstreeTarWriter::new(repo, commit_checksum, out, options)?;
     // For the final chunk, output the commit object, plus all ostree metadata objects along with
     // the containing directories.

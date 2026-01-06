@@ -17,7 +17,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use canon_json::CanonJsonSerialize;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{Dir, MetadataExt};
-use cap_std_ext::cmdext::CapStdExtCommandExt;
+
 use cap_std_ext::dirext::CapStdExtDirExt;
 use containers_image_proxy::{ImageProxy, OpenedImage};
 use flate2::Compression;
@@ -1550,24 +1550,19 @@ pub(crate) fn export_to_oci(
         "",
     )?;
 
-    // Now, handle the non-ostree layers; this is a simple conversion of
-    //
+    // Now, handle the non-ostree layers.
     let compression = opts.skip_compression.then_some(Compression::none());
     for (i, layer) in remaining_layers.iter().enumerate() {
         let layer_ref = &ref_for_layer(layer)?;
         let mut target_blob = dest_oci.create_gzip_layer(compression)?;
-        // Sadly the libarchive stuff isn't exposed via Rust due to type unsafety,
-        // so we'll just fork off the CLI.
-        let repo_dfd = repo.dfd_borrow();
-        let repo_dir = cap_std_ext::cap_std::fs::Dir::reopen_dir(&repo_dfd)?;
-        let mut subproc = std::process::Command::new("ostree")
-            .args(["--repo=.", "export", layer_ref.as_str()])
-            .stdout(std::process::Stdio::piped())
-            .cwd_dir(repo_dir)
-            .spawn()?;
-        // SAFETY: we piped just above
-        let mut stdout = subproc.stdout.take().unwrap();
-        std::io::copy(&mut stdout, &mut target_blob).context("Creating blob")?;
+        // We accepted these images as raw (non-ostree) so export them the same way
+        let export_opts = crate::tar::ExportOptions { raw: true };
+        crate::tar::export_commit(
+            repo,
+            layer_ref.as_str(),
+            &mut target_blob,
+            Some(export_opts),
+        )?;
         let layer = target_blob.complete()?;
         let previous_annotations = srcinfo
             .manifest

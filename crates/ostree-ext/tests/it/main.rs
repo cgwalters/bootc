@@ -814,6 +814,120 @@ async fn test_export_as_container_derived() -> Result<()> {
     Ok(())
 }
 
+/// Verify that when we export a container image, /etc content is properly
+/// remapped from /usr/etc back to /etc in the exported OCI layers.
+/// This is a regression test for https://github.com/bootc-dev/bootc/issues/1864
+#[tokio::test]
+async fn test_export_etc_remapping() -> Result<()> {
+    if !check_skopeo() {
+        return Ok(());
+    }
+    let fixture = Fixture::new_v1()?;
+    // Export into an OCI directory
+    let src_imgref = fixture.export_container().await.unwrap().0;
+
+    // Build a derived image with /etc content
+    let derived_path = &fixture.path.join("derived.oci");
+    let srcpath = src_imgref.name.as_str();
+    oci_clone(srcpath, derived_path).await.unwrap();
+    let test_etc_content = "test etc content for export";
+    ostree_ext::integrationtest::generate_derived_oci_from_tar(
+        derived_path,
+        |w| {
+            let mut layer_tar = tar::Builder::new(w);
+            let mut h = tar::Header::new_gnu();
+            h.set_uid(0);
+            h.set_gid(0);
+            h.set_size(0);
+            h.set_mode(0o755);
+            h.set_entry_type(tar::EntryType::Directory);
+            layer_tar.append_data(&mut h.clone(), "etc", &mut std::io::empty())?;
+            h.set_mode(0o644);
+            h.set_size(test_etc_content.len().try_into().unwrap());
+            h.set_entry_type(tar::EntryType::Regular);
+            layer_tar.append_data(
+                &mut h.clone(),
+                "etc/export-test.conf",
+                std::io::Cursor::new(test_etc_content.as_bytes()),
+            )?;
+            layer_tar.finish()?;
+            Ok(())
+        },
+        None,
+        None,
+    )?;
+
+    let derived_imgref = ImageReference {
+        transport: Transport::OciDir,
+        name: derived_path.to_string(),
+    };
+
+    // Import the derived image into the ostree store
+    let initimport = fixture.must_import(&derived_imgref).await?;
+
+    // Verify the file is in /usr/etc in the ostree commit (as expected)
+    {
+        let r = fixture
+            .destrepo()
+            .read_commit(&initimport.merge_commit, gio::Cancellable::NONE)?
+            .0;
+        let testfile = r.resolve_relative_path("usr/etc/export-test.conf");
+        let testfile = testfile.downcast_ref::<ostree::RepoFile>().unwrap();
+        testfile.ensure_resolved()?;
+    }
+
+    // Export it via store::export
+    let exported_ocidir_name = "exported.ocidir";
+    let dest = ImageReference {
+        transport: Transport::OciDir,
+        name: format!("{}:exported-test", fixture.path.join(exported_ocidir_name)),
+    };
+    fixture.dir.create_dir(exported_ocidir_name)?;
+    let ocidir = ocidir::OciDir::ensure(fixture.dir.open_dir(exported_ocidir_name)?)?;
+    let _exported = store::export(fixture.destrepo(), &derived_imgref, &dest, None)
+        .await
+        .unwrap();
+
+    // Now verify the exported image has /etc/export-test.conf (not /usr/etc/export-test.conf)
+    let idx = ocidir.read_index()?;
+    let desc = idx.manifests().first().unwrap();
+    let manifest: oci_image::ImageManifest = ocidir.read_json_blob(desc).unwrap();
+
+    // Check all layers for our test file
+    let mut found_etc_file = false;
+    let mut found_usr_etc_file = false;
+    for layer in manifest.layers() {
+        let mut blob = ocidir
+            .read_blob(layer)
+            .map(BufReader::new)
+            .map(flate2::read::GzDecoder::new)
+            .map(tar::Archive::new)?;
+        for entry in blob.entries()? {
+            let entry = entry?;
+            let path = entry.path()?;
+            let path_str = path.to_string_lossy();
+            if path_str == "etc/export-test.conf" {
+                found_etc_file = true;
+            }
+            if path_str == "usr/etc/export-test.conf" {
+                found_usr_etc_file = true;
+            }
+        }
+    }
+
+    // The file should be in /etc, not /usr/etc
+    assert!(
+        found_etc_file,
+        "Expected /etc/export-test.conf in exported image, found_usr_etc_file={found_usr_etc_file}"
+    );
+    assert!(
+        !found_usr_etc_file,
+        "Did not expect /usr/etc/export-test.conf in exported image"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_unencapsulate_unbootable() -> Result<()> {
     if !check_skopeo() {
