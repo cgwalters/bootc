@@ -49,6 +49,8 @@ RUN /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-ro
 
 FROM scratch as base
 COPY --from=target-base /target-rootfs/ /
+COPY --from=src /src/hack/ /run/hack/
+RUN cd /run/hack/ && ./provision-derived.sh
 # Note we don't do any customization here yet
 # Mark this as a test image
 LABEL bootc.testimage="1"

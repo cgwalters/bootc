@@ -4,13 +4,6 @@ set -xeu
 # using it in our test suite because it's better than bash. First,
 # enable EPEL to get it.
 
-cloudinit=0
-case ${1:-} in
-  cloudinit) cloudinit=1 ;;
-  "") ;;
-  *) echo "Unhandled flag: ${1:-}" 1>&2; exit 1 ;;
-esac
-
 # Ensure this is pre-created
 mkdir -p -m 0700 /var/roothome
 mkdir -p ~/.config/nushell
@@ -51,9 +44,8 @@ grep -Ev -e '^#' packages.txt | xargs dnf -y install
 cat <<KARGEOF >> /usr/lib/bootc/kargs.d/20-console.toml
 kargs = ["console=ttyS0,115200n8"]
 KARGEOF
-if test $cloudinit = 1; then
-  dnf -y install cloud-init
-  ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
+dnf -y install cloud-init
+ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
   # Allow root SSH login for testing with bcvk/tmt
 mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/80-enable-root.cfg <<'CLOUDEOF'
@@ -67,7 +59,6 @@ growpart:
   devices: ["/sysroot"]
 resize_rootfs: false
 CLOUDEOF
-fi
 
 dnf clean all
 # Stock extra cleaning of logs and caches in general (mostly dnf)
@@ -122,3 +113,14 @@ d /var/lib/dhclient 0755 root root - -
 EOF
   rm -rf /var/lib/dhclient
 fi
+
+# For test-22-logically-bound-install
+cp -a lbi/usr/. /usr
+for x in curl.container curl-base.image podman.image; do
+    ln -s /usr/share/containers/systemd/$x /usr/lib/bootc/bound-images.d/$x
+done
+
+# Add some testing kargs into our dev builds
+install -D -t /usr/lib/bootc/kargs.d test-kargs/*
+# Also copy in some default install configs we use for testing
+install -D -t /usr/lib/bootc/install/ install-test-configs/*
