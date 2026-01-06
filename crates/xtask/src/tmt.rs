@@ -324,9 +324,12 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     // Workaround for https://github.com/bootc-dev/bcvk/issues/174
     // Save the container image to tar, this will be synced to tested OS
     if variant_id == "coreos" {
-        cmd!(sh, "podman save -q -o {workdir}/tmt/tests/bootc.tar localhost/bootc-integration-coreos:latest")
-            .run()
-            .with_context(|| format!("Saving container image to tar"))?;
+        cmd!(
+            sh,
+            "podman save -q -o {workdir}/tmt/tests/bootc.tar localhost/bootc-coreos:latest"
+        )
+        .run()
+        .with_context(|| format!("Saving container image to tar"))?;
     }
 
     // Change to workdir for running tmt commands

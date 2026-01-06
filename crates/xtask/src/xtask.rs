@@ -58,7 +58,7 @@ enum Commands {
 /// Arguments for run-tmt command
 #[derive(Debug, Args)]
 pub(crate) struct RunTmtArgs {
-    /// Image name (e.g., "localhost/bootc-integration")
+    /// Image name (e.g., "localhost/bootc")
     pub(crate) image: String,
 
     /// Test plan filters (e.g., "readonly")
@@ -73,7 +73,7 @@ pub(crate) struct RunTmtArgs {
     #[clap(long)]
     pub(crate) env: Vec<String>,
 
-    /// Upgrade image to use when bind-storage-ro is available (e.g., localhost/bootc-integration-upgrade)
+    /// Upgrade image to use when bind-storage-ro is available (e.g., localhost/bootc-upgrade)
     #[clap(long)]
     pub(crate) upgrade_image: Option<String>,
 
@@ -85,7 +85,7 @@ pub(crate) struct RunTmtArgs {
 /// Arguments for tmt-provision command
 #[derive(Debug, Args)]
 pub(crate) struct TmtProvisionArgs {
-    /// Image name (e.g., "localhost/bootc-integration")
+    /// Image name (e.g., "localhost/bootc")
     pub(crate) image: String,
 
     /// VM name (defaults to "bootc-tmt-manual-<timestamp>")
