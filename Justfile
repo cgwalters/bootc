@@ -233,7 +233,7 @@ pullspec-for-os TYPE NAME:
     @jq -r --arg v "{{NAME}}" '."{{TYPE}}"[$v]' < hack/os-image-map.json
 
 build-mdbook:
-    cd docs && podman build {{base_buildargs}} -t localhost/bootc-mdbook -f Dockerfile.mdbook
+    podman build {{generic_buildargs}} -t localhost/bootc-mdbook -f docs/Dockerfile.mdbook .
 
 # Generate the rendered HTML to the target DIR directory
 build-mdbook-to DIR: build-mdbook
@@ -241,7 +241,7 @@ build-mdbook-to DIR: build-mdbook
     set -xeuo pipefail
     # Create a temporary container to extract the built docs
     container_id=$(podman create localhost/bootc-mdbook)
-    podman cp ${container_id}:/src/book {{DIR}}
+    podman cp ${container_id}:/src/docs/book {{DIR}}
     podman rm -f ${container_id}
 
 mdbook-serve: build-mdbook

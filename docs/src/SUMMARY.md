@@ -70,3 +70,7 @@
 - [Relationship with other projects](relationships.md)
 - [Relationship with OCI artifacs](relationship-oci-artifacts.md)
 - [Relationship with systemd "particles"](relationship-particles.md)
+
+# Development
+
+- [Internals (rustdoc)](internals.md)
