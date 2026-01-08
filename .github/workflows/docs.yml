@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Build mdbook
         run: mkdir target && just build-mdbook-to target/docs
         env:

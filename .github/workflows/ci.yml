@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Validate (default)
         run: just validate
   # Check for security vulnerabilities and license compliance
@@ -57,7 +57,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Enable fsverity for /
         run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
       - name: Install utils
@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Build mdbook
         run: just build-mdbook
   # Build packages for each test OS
@@ -127,7 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
 
       - name: Setup env
         run: |
@@ -164,7 +164,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
         with:
           libvirt: true
       - name: Install tmt
@@ -223,7 +223,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
         with:
           libvirt: true
       - name: Install tmt
