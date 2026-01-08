@@ -206,17 +206,6 @@ jobs:
           fi
           just clean-local-images
 
-      - name: Run TMT test about bootc install on coreos
-        run: |
-          # Only test fedora-43 on fedora-coreos:testing-devel
-          if [ "${{ matrix.test_os }}" = "fedora-43" ] && [ "${{ matrix.variant }}" = "ostree" ]; then
-            just build-testimage-coreos target/packages
-            just test-tmt-on-coreos plan-bootc-install-on-coreos
-            just clean-local-images
-          else
-            echo "skipped"
-          fi
-
       - name: Archive TMT logs
         if: always()
         uses: actions/upload-artifact@v6
@@ -224,10 +213,52 @@ jobs:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.variant }}-${{ env.ARCH }}
           path: /var/tmp/tmt
 
+  # Test bootc install on Fedora CoreOS (separate job to avoid disk space issues
+  # when run in the same job as test-integration).
+  # Uses fedora-43 as it's the current stable Fedora release matching CoreOS.
+  test-coreos:
+    needs: package
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+        with:
+          libvirt: true
+      - name: Install tmt
+        run: pip install --user "tmt[provision-virtual]"
+
+      - name: Setup env
+        run: |
+          BASE=$(just pullspec-for-os base fedora-43)
+          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "BOOTC_variant=ostree" >> $GITHUB_ENV
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: packages-fedora-43
+          path: target/packages/
+
+      - name: Build container and test on CoreOS
+        run: |
+          BOOTC_SKIP_PACKAGE=1 just build
+          just build-testimage-coreos target/packages
+          just test-tmt-on-coreos plan-bootc-install-on-coreos
+          just clean-local-images
+
+      - name: Archive TMT logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tmt-log-PR-${{ github.event.number }}-fedora-43-coreos-${{ env.ARCH }}
+          path: /var/tmp/tmt
+
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, package, test-integration]
+    needs: [cargo-deny, validate, package, test-integration, test-coreos]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
@@ -235,4 +266,5 @@ jobs:
           needs.cargo-deny.result != 'success' ||
           needs.validate.result != 'success' ||
           needs.package.result != 'success' ||
-          needs.test-integration.result != 'success'
+          needs.test-integration.result != 'success' ||
+          needs.test-coreos.result != 'success'
