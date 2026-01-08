@@ -22,3 +22,11 @@ These are intended for developers working on bootc itself, not for external cons
 - [bootc-internal-blockdev](internals/bootc_internal_blockdev/index.html) - Block device handling
 - [bootc-sysusers](internals/bootc_sysusers/index.html) - systemd-sysusers implementation
 - [bootc-tmpfiles](internals/bootc_tmpfiles/index.html) - systemd-tmpfiles implementation
+
+## External git crates
+
+These crates are pulled from git and are not published to crates.io (so not on docs.rs).
+
+- [composefs](internals/composefs/index.html) - Core composefs library
+- [composefs-boot](internals/composefs_boot/index.html) - Boot support for composefs
+- [composefs-oci](internals/composefs_oci/index.html) - OCI integration for composefs
