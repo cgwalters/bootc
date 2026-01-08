@@ -23,6 +23,8 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Build mdbook
         run: mkdir target && just build-mdbook-to target/docs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5

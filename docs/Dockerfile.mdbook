@@ -1,8 +1,13 @@
 FROM ghcr.io/bootc-dev/devenv-c10s:latest
 USER root
 # Install mdbook tooling via cargo-binstall
-RUN <<EORUN
+# The GH_TOKEN secret is used to avoid GitHub API rate limits when fetching
+# pre-built binaries. Without it, binstall falls back to building from source.
+RUN --mount=type=secret,id=GH_TOKEN <<EORUN
 set -xeuo pipefail
+if test -f /run/secrets/GH_TOKEN; then
+    export GH_TOKEN=$(cat /run/secrets/GH_TOKEN)
+fi
 curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 deps=(mdbook@0.4.52 
       mdbook-mermaid@0.16.0 

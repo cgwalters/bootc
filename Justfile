@@ -205,7 +205,14 @@ pullspec-for-os TYPE NAME:
     @jq -r --arg v "{{NAME}}" '."{{TYPE}}"[$v]' < hack/os-image-map.json
 
 build-mdbook:
-    podman build {{generic_buildargs}} -t localhost/bootc-mdbook -f docs/Dockerfile.mdbook .
+    #!/bin/bash
+    set -xeuo pipefail
+    secret_arg=""
+    # Pass GH_TOKEN to avoid API rate limits when cargo-binstall fetches binaries
+    if test -n "${GH_TOKEN:-}"; then
+        secret_arg="--secret=id=GH_TOKEN,env=GH_TOKEN"
+    fi
+    podman build {{generic_buildargs}} ${secret_arg} -t localhost/bootc-mdbook -f docs/Dockerfile.mdbook .
 
 # Generate the rendered HTML to the target DIR directory
 build-mdbook-to DIR: build-mdbook
