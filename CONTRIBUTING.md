@@ -94,6 +94,22 @@ VM for each test run.
 You can shortcut some iteration cycles by having a more persistent
 environment where you run bootc.
 
+#### Sysext-based development with bcvk
+
+The fastest iteration cycle uses systemd-sysext to hot-reload bootc changes
+into a running VM without rebuilding container images:
+
+```bash
+just bcvk-up     # Build sysext and launch/sync dev VM
+# ... make changes ...
+just bcvk-sync   # Rebuild and reload sysext in the VM
+just bcvk-ssh    # SSH into the dev VM
+just bcvk-down   # Stop the VM when done
+```
+
+This workflow builds bootc into an RPM, extracts it as a sysext, and mounts
+it into the VM via virtiofs. Changes are visible after `systemd-sysext refresh`.
+
 #### Upgrading from the container image
 
 One good approach is to create a persistent target virtual machine via e.g.
