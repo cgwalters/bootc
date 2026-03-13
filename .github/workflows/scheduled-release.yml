@@ -92,6 +92,13 @@ jobs:
           cargo set-version --manifest-path crates/lib/Cargo.toml --package bootc-lib --bump ${INPUT_VERSION:-minor}
           VERSION=$(cargo read-manifest --manifest-path crates/lib/Cargo.toml | jq -r '.version')
 
+          # Bump internal published crate versions to match the release,
+          # using 0.MINOR.PATCH (these are internal crates, not semver-stable)
+          INTERNAL_VERSION="0.${VERSION#*.}"
+          for crate in bootc-internal-utils bootc-internal-mount bootc-internal-blockdev; do
+            cargo set-version -p "${crate}" "${INTERNAL_VERSION}"
+          done
+
           cargo update --workspace
           cargo xtask update-generated
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT

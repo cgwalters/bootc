@@ -12,8 +12,13 @@ jobs:
     - uses: actions/checkout@v6
     - uses: rust-lang/crates-io-auth-action@v1
       id: auth
-    - run: |
-        for crate in bootc-internal-utils bootc-internal-blockdev; do
+    - name: Publish crates
+      run: |
+        # Publish in dependency order: utils has no internal deps,
+        # mount depends on utils, blockdev depends on both.
+        # cargo publish polls the index after upload, so dependent
+        # crates will resolve correctly without an explicit delay.
+        for crate in bootc-internal-utils bootc-internal-mount bootc-internal-blockdev; do
           echo "Publishing $crate..."
           cargo publish -p "$crate"
           echo "Successfully published $crate"
