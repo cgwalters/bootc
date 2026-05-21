@@ -30,7 +30,7 @@ use composefs::{
     mountcompat::{overlayfs_set_fd, overlayfs_set_lower_and_data_fds, prepare_mount},
     repository::Repository,
 };
-use composefs_boot::cmdline::get_cmdline_composefs;
+use composefs_boot::cmdline::ComposefsCmdline;
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 
@@ -387,7 +387,8 @@ pub fn setup_root(args: Args) -> Result<()> {
         .cmdline
         .unwrap_or(Cmdline::from_proc().context("Failed to read cmdline")?);
 
-    let cfs_cmdline = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
+    let cfs_cmdline = ComposefsCmdline::<Sha512HashValue>::from_cmdline(&cmdline)?
+        .context("no composefs= / composefs.digest= karg found in kernel cmdline")?;
     let image = cfs_cmdline.digest().clone();
     let insecure = cfs_cmdline.is_insecure();
 

@@ -83,7 +83,7 @@ use composefs_boot::bootloader::{
     BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType,
     UsrLibModulesVmlinuz, get_boot_resources,
 };
-use composefs_boot::{cmdline::get_cmdline_composefs, os_release::OsReleaseInfo, uki};
+use composefs_boot::{os_release::OsReleaseInfo, uki};
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
@@ -785,7 +785,9 @@ fn write_pe_to_esp(
         let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
 
         let cfs_cmdline =
-            get_cmdline_composefs::<Sha512HashValue>(cmdline).context("Parsing composefs=")?;
+            composefs_boot::cmdline::ComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline)
+                .context("Parsing composefs karg")?
+                .context("no composefs= / composefs.digest= karg found")?;
         let composefs_cmdline = cfs_cmdline.digest().clone();
         let missing_verity_allowed_cmdline = cfs_cmdline.is_insecure();
 
