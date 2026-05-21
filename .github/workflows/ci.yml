@@ -219,7 +219,7 @@ jobs:
         filesystem: ["ext4", "xfs"]
         bootloader: ["grub", "systemd"]
         boot_type: ["bls", "uki"]
-        seal_state: ["sealed", "unsealed"]
+        seal_state: ["sealed", "unsealed", "sealed-v2"]
 
         exclude:
           # centos-9 fails with EUCLEAN (https://github.com/bootc-dev/bootc/issues/1812)
@@ -231,6 +231,12 @@ jobs:
           - seal_state: "sealed"
             bootloader: grub
           - seal_state: "sealed"
+            filesystem: xfs
+          - seal_state: "sealed-v2"
+            boot_type: bls
+          - seal_state: "sealed-v2"
+            bootloader: grub
+          - seal_state: "sealed-v2"
             filesystem: xfs
           - seal_state: "unsealed"
             filesystem: ext4

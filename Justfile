@@ -171,6 +171,11 @@ list-variants:
 build-sealed:
     @just --justfile {{justfile()}} variant=composefs bootloader=systemd boot_type=uki seal_state=sealed build
 
+# Build a sealed composefs image with legacy V2 EROFS karg (for backwards-compat testing)
+[group('core')]
+build-sealed-v2:
+    @just --justfile {{justfile()}} variant=composefs bootloader=systemd boot_type=uki seal_state=sealed-v2 build
+
 # Run tmt integration tests in VMs (e.g. `just test-tmt readonly`)
 [group('core')]
 test-tmt *ARGS: build
@@ -185,14 +190,16 @@ test-container: build build-units
 
 [group('core')]
 test-composefs bootloader filesystem boot_type seal_state *ARGS:
-    @if [ "{{seal_state}}" = "sealed" ] && [ "{{filesystem}}" = "xfs" ]; then \
-        echo "Invalid combination: sealed requires filesystem that supports fs-verity (ext4, btrfs)"; \
+    @if ([ "{{seal_state}}" = "sealed" ] || [ "{{seal_state}}" = "sealed-v2" ]) && [ "{{filesystem}}" = "xfs" ]; then \
+        echo "Invalid combination: sealed/sealed-v2 requires filesystem that supports fs-verity (ext4, btrfs)"; \
         exit 1; \
     fi
 
-    @if [ "{{seal_state}}" = "sealed" ] && [ "{{boot_type}}" != "uki" ]; then \
-        echo "Invalid combination: sealed requires boot_type=uki"; \
-        exit 1; \
+    @if [ "{{seal_state}}" = "sealed" ] || [ "{{seal_state}}" = "sealed-v2" ]; then \
+        if [ "{{boot_type}}" != "uki" ]; then \
+            echo "Invalid combination: sealed/sealed-v2 requires boot_type=uki"; \
+            exit 1; \
+        fi \
     fi
 
     just variant=composefs \
@@ -206,7 +213,7 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
                 --seal-state={{seal_state}} \
                 --boot-type={{boot_type}} \
                 {{ARGS}} \
-                $(if [ "{{boot_type}}" = "uki" ] && [ "{{seal_state}}" = "sealed" ]; then echo "readonly image-upgrade-reboot"; else echo "integration"; fi)
+                $(if [ "{{boot_type}}" = "uki" ] && ([ "{{seal_state}}" = "sealed" ] || [ "{{seal_state}}" = "sealed-v2" ]); then echo "readonly image-upgrade-reboot"; else echo "integration"; fi)
 
 # Run upgrade test: boot VM from published base image (with tmt deps added),
 # upgrade to locally-built image, reboot, then run readonly tests to verify.

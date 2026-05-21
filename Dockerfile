@@ -288,8 +288,13 @@ if [[ $filesystem == "xfs" ]]; then
     allow_missing_verity=true
 fi
 
+erofs_version=v1
+if [[ $seal_state == "sealed-v2" ]]; then
+    erofs_version=v2
+fi
+
 if test "${boot_type}" = "uki"; then
-  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state
+  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state $erofs_version
 fi
 EORUN
 
