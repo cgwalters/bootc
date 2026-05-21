@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs::repository::RepositoryConfig;
 use composefs_boot::bootloader::{BootEntry as ComposefsBootEntry, get_boot_resources};
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -62,16 +63,16 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let (mut repo, _created) = crate::store::ComposefsRepository::init_path(
+    let config = {
+        let c = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+        if allow_missing_fsverity { c.set_insecure() } else { c }
+    };
+    let (repo, _created) = crate::store::ComposefsRepository::init_path(
         rootfs_dir,
         "composefs",
-        composefs::fsverity::Algorithm::SHA512,
-        !allow_missing_fsverity,
+        config,
     )
     .context("Failed to initialize composefs repository")?;
-    if allow_missing_fsverity {
-        repo.set_insecure();
-    }
 
     let imgref: containers_image_proxy::ImageReference = state
         .source
@@ -311,15 +312,22 @@ pub(crate) async fn pull_composefs_repo(
         "Pulled image into composefs repository",
     );
 
-    // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
-        .context("Generating bootable EROFS image")?;
-
-    // Get boot entries from the OCI filesystem (untransformed).
+    // Get boot entries from the OCI filesystem (untransformed) before generating
+    // the boot image so we can detect whether any UKI has a V2 karg baked in
+    // and upgrade the repo format accordingly.
     let fs = create_composefs_filesystem(&*repo, &pull_result.config_digest, None)
         .context("Creating composefs filesystem for boot entry discovery")?;
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
+
+    // If any UKI has a legacy V2 composefs= karg, upgrade the repo to FormatSet::BOTH
+    // so both V1 and V2 EROFS images are generated for it.
+    upgrade_repo_for_v2_uki(&repo, &entries, &rootfs_dir, allow_missing_fsverity)
+        .context("Upgrading repo for V2 UKI karg")?;
+
+    // Generate the bootable EROFS image (idempotent).
+    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
+        .context("Generating bootable EROFS image")?;
 
     // Unwrap the Arc to get the owned repo back.
     let mut repo = Arc::try_unwrap(repo).map_err(|_| {
@@ -335,6 +343,64 @@ pub(crate) async fn pull_composefs_repo(
         id,
         manifest_digest: pull_result.manifest_digest.to_string(),
     })
+}
+
+/// If any UKI entry has a V2 (`composefs=`) karg baked in, upgrade the repo
+/// to `FormatSet::BOTH` so both V1 and V2 EROFS images are generated.
+///
+/// This is needed for UKIs built before V1 EROFS was the default: they have
+/// a V2 digest in their cmdline and the V2 image must exist for the verity
+/// check to pass.
+pub(crate) fn upgrade_repo_for_v2_uki(
+    repo: &Arc<crate::store::ComposefsRepository>,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+    rootfs_dir: &cap_std_ext::cap_std::fs::Dir,
+    allow_missing_fsverity: bool,
+) -> Result<()> {
+    use composefs::erofs::format::FormatSet;
+    use composefs_boot::bootloader::PEType;
+
+    // Only relevant if the repo is currently V1_ONLY.
+    if repo.default_format_set() != FormatSet::V1_ONLY {
+        return Ok(());
+    }
+
+    for entry in entries {
+        let ComposefsBootEntry::Type2(pe_entry) = entry else {
+            continue;
+        };
+        if !matches!(pe_entry.pe_type, PEType::Uki) {
+            continue;
+        }
+
+        // Read the UKI PE binary from the repo and extract its embedded cmdline.
+        let efi_bin = composefs::fs::read_file(&pe_entry.file, repo)
+            .context("Reading UKI binary from repo")?;
+
+        let cmdline = match composefs_boot::uki::get_cmdline(&efi_bin) {
+            Ok(c) => c,
+            Err(_) => continue, // UKI extension or binary without cmdline section
+        };
+
+        if let Ok(Some(composefs_boot::cmdline::ComposefsCmdline::V2 { .. })) =
+            composefs_boot::cmdline::ComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline)
+        {
+            tracing::info!(
+                "UKI has legacy composefs= karg (V2 EROFS); \
+                 upgrading repo to FormatSet::BOTH"
+            );
+            let mut config =
+                RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+            config.erofs_formats = FormatSet::BOTH;
+            if allow_missing_fsverity {
+                config = config.set_insecure();
+            }
+            crate::store::ComposefsRepository::init_path(rootfs_dir, "composefs", config)
+                .context("Upgrading composefs repo to FormatSet::BOTH")?;
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

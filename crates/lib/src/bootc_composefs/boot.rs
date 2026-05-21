@@ -1217,15 +1217,27 @@ pub(crate) async fn setup_composefs_boot(
 
     let repo = Arc::new(repo);
 
-    // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
-        .context("Generating bootable EROFS image")?;
-
-    // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
+    // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.)
+    // before generating the boot image so we can detect any V2 UKI karg and upgrade
+    // the repo format accordingly.
     let fs = composefs_oci::image::create_filesystem(&*repo, &pull_result.config_digest, None)
         .context("Creating composefs filesystem for boot entry discovery")?;
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
+
+    // If any UKI has a legacy V2 composefs= karg baked in, upgrade the repo to
+    // FormatSet::BOTH so both V1 and V2 EROFS images are produced.
+    crate::bootc_composefs::repo::upgrade_repo_for_v2_uki(
+        &repo,
+        &entries,
+        &root_setup.physical_root,
+        allow_missing_fsverity,
+    )
+    .context("Upgrading repo for V2 UKI karg")?;
+
+    // Generate the bootable EROFS image (idempotent).
+    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
+        .context("Generating bootable EROFS image")?;
 
     let mounted_fs = Dir::reopen_dir(
         &repo
