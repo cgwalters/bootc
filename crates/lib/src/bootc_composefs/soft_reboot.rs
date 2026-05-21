@@ -108,7 +108,7 @@ pub(crate) async fn prepare_soft_reboot_composefs(
 
     create_dir_all(NEXTROOT).context("Creating nextroot")?;
 
-    let cmdline = ComposefsCmdline::build(deployment_id, booted_cfs.cmdline.allow_missing_fsverity);
+    let cmdline = ComposefsCmdline::build(deployment_id, booted_cfs.cmdline.allow_missing_fsverity, booted_cfs.cmdline.version);
 
     let args = bootc_initramfs_setup::Args {
         cmd: vec![],

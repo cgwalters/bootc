@@ -85,6 +85,7 @@ use composefs_boot::bootloader::{
 };
 use composefs_boot::{cmdline::get_cmdline_composefs, os_release::OsReleaseInfo, uki};
 use composefs_ctl::composefs;
+use composefs_ctl::composefs::erofs::format::FormatVersion;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
 use fn_error_context::context;
@@ -482,7 +483,7 @@ pub(crate) fn setup_composefs_bls_boot(
             cmdline_options.extend(&root_setup.kargs);
 
             let composefs_cmdline =
-                ComposefsCmdline::build(&id_hex, state.composefs_options.allow_missing_verity);
+                ComposefsCmdline::build(&id_hex, state.composefs_options.allow_missing_verity, FormatVersion::V2);
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline.to_string()));
 
             // If there's a separate /boot partition, add a systemd.mount-extra
@@ -531,7 +532,7 @@ pub(crate) fn setup_composefs_bls_boot(
 
             // Copy all cmdline args, replacing only `composefs=`
             let cfs_cmdline =
-                ComposefsCmdline::build(&id_hex, booted_cfs.cmdline.allow_missing_fsverity)
+                ComposefsCmdline::build(&id_hex, booted_cfs.cmdline.allow_missing_fsverity, booted_cfs.cmdline.version)
                     .to_string();
 
             let param = Parameter::parse(&cfs_cmdline)

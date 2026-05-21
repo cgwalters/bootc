@@ -11,6 +11,7 @@ use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
+use composefs_ctl::composefs::erofs::format::FormatVersion;
 use fn_error_context::context;
 
 use crate::bootc_composefs::digest::compute_composefs_digest;
@@ -31,6 +32,7 @@ pub(crate) async fn build_ukify(
     extra_kargs: &[String],
     args: &[OsString],
     allow_missing_fsverity: bool,
+    erofs_version: FormatVersion,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
     // Warn if --karg is used (temporary workaround)
@@ -78,16 +80,22 @@ pub(crate) async fn build_ukify(
         anyhow::bail!("Initramfs not found at {initramfs_path}");
     }
 
-    // Compute the composefs digest
-    let composefs_digest = compute_composefs_digest(rootfs, write_dumpfile_to).await?;
+    // Compute the composefs digest for the requested EROFS format version.
+    // V1 → composefs.digest=<hex>, V2 → composefs=<hex> (legacy).
+    let composefs_digest =
+        compute_composefs_digest(rootfs, erofs_version, write_dumpfile_to).await?;
 
     // Get kernel arguments from kargs.d
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
 
-    // Add the composefs digest
-    cmdline.extend(&Cmdline::from(
-        ComposefsCmdline::build(&composefs_digest, allow_missing_fsverity).to_string(),
-    ));
+    // Add the composefs karg, choosing the key based on EROFS format version.
+    let karg_str = match erofs_version {
+        FormatVersion::V1 => ComposefsCmdline::build(&composefs_digest, allow_missing_fsverity, FormatVersion::V1)
+            .to_string(),
+        FormatVersion::V2 => ComposefsCmdline::build(&composefs_digest, allow_missing_fsverity, FormatVersion::V2)
+            .to_string(),
+    };
+    cmdline.extend(&Cmdline::from(karg_str));
 
     // Add any extra kargs provided via --karg
     for karg in extra_kargs {
@@ -132,7 +140,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
-        let result = build_ukify(path, &[], &[], false, None).await;
+        let result = build_ukify(path, &[], &[], false, FormatVersion::V2, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -150,7 +158,7 @@ mod tests {
         fs::create_dir_all(tempdir.path().join("boot/EFI/Linux")).unwrap();
         fs::write(tempdir.path().join("boot/EFI/Linux/test.efi"), b"fake uki").unwrap();
 
-        let result = build_ukify(path, &[], &[], false, None).await;
+        let result = build_ukify(path, &[], &[], false, FormatVersion::V2, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
