@@ -784,8 +784,10 @@ fn write_pe_to_esp(
     if matches!(pe_type, PEType::Uki) {
         let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
 
-        let (composefs_cmdline, missing_verity_allowed_cmdline) =
+        let cfs_cmdline =
             get_cmdline_composefs::<Sha512HashValue>(cmdline).context("Parsing composefs=")?;
+        let composefs_cmdline = cfs_cmdline.digest().clone();
+        let missing_verity_allowed_cmdline = cfs_cmdline.is_insecure();
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
         // NOTE: This will only be checked for new installs and now upgrades/switches

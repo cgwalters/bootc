@@ -387,7 +387,9 @@ pub fn setup_root(args: Args) -> Result<()> {
         .cmdline
         .unwrap_or(Cmdline::from_proc().context("Failed to read cmdline")?);
 
-    let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
+    let cfs_cmdline = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
+    let image = cfs_cmdline.digest().clone();
+    let insecure = cfs_cmdline.is_insecure();
 
     let new_root = match args.root_fs {
         Some(path) => open_root_fs(&path).context("Failed to clone specified root fs")?,
