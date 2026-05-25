@@ -13,6 +13,9 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 
+use composefs::erofs::format::FormatVersion;
+use composefs_ctl::composefs;
+
 use crate::bootc_composefs::digest::compute_composefs_digest;
 use crate::bootc_composefs::status::ComposefsCmdline;
 
@@ -31,6 +34,7 @@ pub(crate) async fn build_ukify(
     extra_kargs: &[String],
     args: &[OsString],
     allow_missing_fsverity: bool,
+    erofs_version: FormatVersion,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
     // Warn if --karg is used (temporary workaround)
@@ -79,7 +83,8 @@ pub(crate) async fn build_ukify(
     }
 
     // Compute the composefs digest
-    let composefs_digest = compute_composefs_digest(rootfs, write_dumpfile_to).await?;
+    let composefs_digest =
+        compute_composefs_digest(rootfs, erofs_version, write_dumpfile_to).await?;
 
     // Get kernel arguments from kargs.d
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;

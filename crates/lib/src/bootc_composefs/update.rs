@@ -141,7 +141,7 @@ pub(crate) fn validate_update(
     let mut fs = create_filesystem(repo, &oci_digest, Some(config_verity))?;
     fs.transform_for_boot(&repo)?;
 
-    let image_id = fs.compute_image_id();
+    let image_id = fs.compute_image_id(composefs::erofs::format::FormatVersion::V2);
 
     let all_deployments = host.all_composefs_deployments()?;
 
