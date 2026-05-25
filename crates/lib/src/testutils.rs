@@ -164,14 +164,15 @@ impl TestRoot {
 
         // Initialize the composefs repo (creates meta.json)
         let repo_dir = root.open_dir("composefs")?;
-        let (mut repo, _created) = ComposefsRepository::init_path(
+        let (repo, _created) = ComposefsRepository::init_path(
             &repo_dir,
             ".",
-            composefs_ctl::composefs::fsverity::Algorithm::SHA512,
-            false,
+            composefs_ctl::composefs::repository::RepositoryConfig::new(
+                composefs_ctl::composefs::fsverity::Algorithm::SHA512,
+            )
+            .set_insecure(),
         )
         .context("Initializing composefs repo")?;
-        repo.set_insecure();
 
         let mut test_root = Self {
             root,

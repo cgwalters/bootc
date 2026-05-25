@@ -28,7 +28,7 @@ use composefs::{
     mountcompat::{overlayfs_set_fd, overlayfs_set_lower_and_data_fds, prepare_mount},
     repository::Repository,
 };
-use composefs_boot::cmdline::get_cmdline_composefs;
+use composefs_boot::cmdline::ComposefsCmdline;
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 
@@ -463,7 +463,10 @@ pub fn setup_root(args: Args) -> Result<()> {
         config
     };
 
-    let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
+    let composefs = ComposefsCmdline::<Sha512HashValue>::from_cmdline(&cmdline)?
+        .context("No composefs= or composefs.digest.v1= karg found")?;
+    let image = composefs.digest();
+    let insecure = composefs.is_insecure();
 
     let new_root = match &args.root_fs {
         Some(path) => open_root_fs(path).context("Failed to clone specified root fs")?,
