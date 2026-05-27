@@ -31,6 +31,7 @@ pub(crate) async fn build_ukify(
     extra_kargs: &[String],
     args: &[OsString],
     allow_missing_fsverity: bool,
+    include_dumpfile: bool,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
     // Warn if --karg is used (temporary workaround)
@@ -78,8 +79,30 @@ pub(crate) async fn build_ukify(
         anyhow::bail!("Initramfs not found at {initramfs_path}");
     }
 
+    // Derive dumpfile path from --output in passthrough args
+    let effective_dumpfile_to = if include_dumpfile && write_dumpfile_to.is_none() {
+        // Find --output in the passthrough args
+        let output_path = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .find_map(|(flag, val)| {
+                if flag == "--output" {
+                    Some(Utf8Path::new(val.to_str()?))
+                } else {
+                    None
+                }
+            });
+        output_path.map(|p| {
+            let stem = p.file_stem().unwrap_or(p.as_str());
+            p.with_file_name(format!("{stem}-rootfs.dumpfile"))
+        })
+    } else {
+        write_dumpfile_to.map(|p| p.to_path_buf())
+    };
+
     // Compute the composefs digest
-    let composefs_digest = compute_composefs_digest(rootfs, write_dumpfile_to).await?;
+    let composefs_digest =
+        compute_composefs_digest(rootfs, effective_dumpfile_to.as_deref()).await?;
 
     // Get kernel arguments from kargs.d
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
@@ -132,7 +155,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
-        let result = build_ukify(path, &[], &[], false, None).await;
+        let result = build_ukify(path, &[], &[], false, false, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -150,7 +173,7 @@ mod tests {
         fs::create_dir_all(tempdir.path().join("boot/EFI/Linux")).unwrap();
         fs::write(tempdir.path().join("boot/EFI/Linux/test.efi"), b"fake uki").unwrap();
 
-        let result = build_ukify(path, &[], &[], false, None).await;
+        let result = build_ukify(path, &[], &[], false, false, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(

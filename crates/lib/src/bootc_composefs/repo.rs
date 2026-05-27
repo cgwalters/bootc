@@ -312,8 +312,13 @@ pub(crate) async fn pull_composefs_repo(
     );
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
-        .context("Generating bootable EROFS image")?;
+    let dumpfile_path = std::path::Path::new("/sysroot/composefs-oci-install.dumpfile");
+    let id = composefs_oci::generate_boot_image(
+        &repo,
+        &pull_result.manifest_digest,
+        Some(dumpfile_path),
+    )
+    .context("Generating bootable EROFS image")?;
 
     // Get boot entries from the OCI filesystem (untransformed).
     let fs = create_composefs_filesystem(&*repo, &pull_result.config_digest, None)

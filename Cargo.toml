@@ -119,3 +119,6 @@ todo = "deny"
 needless_borrow = "allow"
 needless_borrows_for_generic_args = "allow"
 
+
+[patch."https://github.com/composefs/composefs-rs"]
+composefs-ctl = { path = "/var/home/ai/src/github/composefs/composefs-rs/crates/composefs-ctl" } # Patched by composefs-rs

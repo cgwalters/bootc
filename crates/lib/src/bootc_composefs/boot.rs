@@ -795,6 +795,8 @@ fn write_pe_to_esp(
     uki_id: &Sha512HashValue,
     missing_fsverity_allowed: bool,
     mounted_efi: impl AsRef<Path>,
+    composefs_mount_root: Option<&Path>,
+    install_dumpfile: Option<&Path>,
 ) -> Result<Option<UKIInfo>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
@@ -825,6 +827,70 @@ fn write_pe_to_esp(
         }
 
         if composefs_cmdline != *uki_id {
+            // Attempt to generate a diff between the install dumpfile and the
+            // dumpfile embedded in the container image alongside the UKI, to
+            // help diagnose what changed in the composefs image.
+            let uki_stem = file_path
+                .file_stem()
+                .unwrap_or_default();
+            let uki_dumpfile_name = format!("{uki_stem}-rootfs.dumpfile");
+            let uki_dumpfile: Option<std::path::PathBuf> =
+                composefs_mount_root.and_then(|root| {
+                    file_path.parent().map(|parent| {
+                        // file_path is absolute (e.g. /efi/EFI/Linux/kver.efi);
+                        // strip the leading '/' so it can be joined onto root.
+                        let rel = parent.as_str().trim_start_matches('/');
+                        root.join(rel).join(&uki_dumpfile_name)
+                    })
+                });
+
+            match (&uki_dumpfile, &install_dumpfile) {
+                (Some(uki_df), Some(inst_df)) if uki_df.exists() && inst_df.exists() => {
+                    tracing::error!(
+                        "Composefs digest mismatch detected! Generating diff..."
+                    );
+                    let diff_output = std::process::Command::new("diff")
+                        .arg("-u")
+                        .arg(uki_df)
+                        .arg(inst_df)
+                        .output();
+                    match diff_output {
+                        Ok(output) => {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            if !stdout.is_empty() {
+                                tracing::error!(
+                                    "Dumpfile diff (ukify vs install):\n{stdout}"
+                                );
+                            } else {
+                                tracing::error!(
+                                    "Dumpfiles are identical despite digest mismatch"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!("Failed to run diff: {e}"),
+                    }
+                }
+                _ => {
+                    if let Some(uki_df) = &uki_dumpfile {
+                        if !uki_df.exists() {
+                            tracing::warn!(
+                                "No ukify dumpfile found at {uki_df:?} — build with \
+--include-dumpfile to enable"
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            "No composefs mount root available; cannot locate ukify dumpfile"
+                        );
+                    }
+                    if let Some(inst_df) = &install_dumpfile {
+                        if !inst_df.exists() {
+                            tracing::warn!("No install dumpfile found at {inst_df:?}");
+                        }
+                    }
+                }
+            }
+
             anyhow::bail!(
                 "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {uki_id:?})"
             );
@@ -1056,6 +1122,8 @@ pub(crate) fn setup_composefs_uki_boot(
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
+    composefs_mount_root: Option<&Path>,
+    install_dumpfile: Option<&Path>,
 ) -> Result<String> {
     let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
     {
@@ -1139,6 +1207,8 @@ pub(crate) fn setup_composefs_uki_boot(
                     &id,
                     missing_fsverity_allowed,
                     esp_mount.dir.path(),
+                    composefs_mount_root,
+                    install_dumpfile,
                 )?;
 
                 if let Some(label) = ret {
@@ -1331,7 +1401,8 @@ pub(crate) async fn setup_composefs_boot(
     let repo = Arc::new(repo);
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
+    let dumpfile_path = root_setup.physical_root_path.join("composefs-oci-install.dumpfile");
+    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest, Some(dumpfile_path.as_std_path()))
         .context("Generating bootable EROFS image")?;
 
     // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
@@ -1399,6 +1470,8 @@ pub(crate) async fn setup_composefs_boot(
             repo,
             &id,
             entries,
+            Some(mounted_root.root_path()),
+            Some(dumpfile_path.as_std_path()),
         )?,
     };
 

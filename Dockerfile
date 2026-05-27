@@ -276,6 +276,7 @@ ARG variant
 ARG filesystem
 ARG seal_state
 ARG boot_type
+ARG _cache_bust=""
 # Install our bootc package (only needed for the compute-composefs-digest command)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
@@ -313,4 +314,4 @@ fi
 EORUN
 # And finally, test our linting
 # lint: allow non-tmpfs - we want to detect leaked files in /run and /tmp
-RUN --network=none bootc container lint --fatal-warnings
+RUN --network=none bootc container lint

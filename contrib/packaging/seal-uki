@@ -43,7 +43,8 @@ if [[ $seal_state == "sealed" ]]; then
 fi
 
 # Baseline container ukify options
-containerukifyargs=(--rootfs "${target}")
+containerukifyargs=(--rootfs "${target}"
+                   --include-dumpfile)
 
 missing_verity=()
 

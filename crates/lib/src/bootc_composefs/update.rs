@@ -305,6 +305,8 @@ pub(crate) async fn do_upgrade(
             repo,
             &id,
             entries,
+            None,
+            None,
         )?,
     };
 

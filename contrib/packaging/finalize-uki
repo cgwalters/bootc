@@ -32,9 +32,16 @@ fi
 mkdir -p /boot/EFI/Linux
 
 # The UKI in /boot is outside the composefs-verified tree, which is fine
-# because the UKI itself is signed and verified by Secure Boot
+# because the UKI itself is signed and verified by Secure Boot.
 target=/boot/EFI/Linux/${kver}.efi
 cp "${uki_src}/${kver}.efi" "${target}"
+
+# Copy the composefs dumpfile alongside the UKI for install-time mismatch debugging
+for df in "${uki_src}"/*-rootfs.dumpfile; do
+    if [[ -f "$df" ]]; then
+        cp "$df" /boot/EFI/Linux/
+    fi
+done
 
 # Remove the raw kernel and initramfs since we're using a UKI now.
 # NOTE: We intentionally keep these for now until bcvk is updated to extract

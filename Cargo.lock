@@ -770,7 +770,6 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=7e86960f746cff33bdc96e6fdca935f004c5ffb8#7e86960f746cff33bdc96e6fdca935f004c5ffb8"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -782,6 +781,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "serde_repr",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
@@ -795,7 +795,6 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=7e86960f746cff33bdc96e6fdca935f004c5ffb8#7e86960f746cff33bdc96e6fdca935f004c5ffb8"
 dependencies = [
  "anyhow",
  "composefs",
@@ -810,7 +809,6 @@ dependencies = [
 [[package]]
 name = "composefs-ctl"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=7e86960f746cff33bdc96e6fdca935f004c5ffb8#7e86960f746cff33bdc96e6fdca935f004c5ffb8"
 dependencies = [
  "anyhow",
  "clap",
@@ -832,7 +830,6 @@ dependencies = [
 [[package]]
 name = "composefs-ioctls"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=7e86960f746cff33bdc96e6fdca935f004c5ffb8#7e86960f746cff33bdc96e6fdca935f004c5ffb8"
 dependencies = [
  "rustix",
  "thiserror 2.0.18",
@@ -841,7 +838,6 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=7e86960f746cff33bdc96e6fdca935f004c5ffb8#7e86960f746cff33bdc96e6fdca935f004c5ffb8"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -854,7 +850,7 @@ dependencies = [
  "containers-image-proxy",
  "fn-error-context",
  "hex",
- "indicatif 0.18.4",
+ "indicatif 0.17.11",
  "ocidir",
  "rustix",
  "serde",
@@ -870,7 +866,6 @@ dependencies = [
 [[package]]
 name = "composefs-storage"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=7e86960f746cff33bdc96e6fdca935f004c5ffb8#7e86960f746cff33bdc96e6fdca935f004c5ffb8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1881,7 +1876,6 @@ checksum = "25470f23803092da7d239834776d653104d551bc4d7eacaf31e6837854b8e9eb"
 dependencies = [
  "console 0.16.3",
  "portable-atomic",
- "tokio",
  "unicode-width",
  "unit-prefix",
  "web-time",
@@ -3043,6 +3037,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_repr"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

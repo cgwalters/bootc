@@ -438,6 +438,11 @@ pub(crate) enum ContainerOpts {
         #[clap(long)]
         allow_missing_verity: bool,
 
+        /// Include a dumpfile alongside the UKI output for debugging digest mismatches.
+        /// The dumpfile will be named <kver>-rootfs.dumpfile next to the --output path.
+        #[clap(long)]
+        include_dumpfile: bool,
+
         /// Write a dumpfile to this path
         #[clap(long)]
         write_dumpfile_to: Option<Utf8PathBuf>,
@@ -1901,6 +1906,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 rootfs,
                 kargs,
                 allow_missing_verity,
+                include_dumpfile,
                 write_dumpfile_to,
                 args,
             } => {
@@ -1909,6 +1915,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     &kargs,
                     &args,
                     allow_missing_verity,
+                    include_dumpfile,
                     write_dumpfile_to.as_deref(),
                 )
                 .await
