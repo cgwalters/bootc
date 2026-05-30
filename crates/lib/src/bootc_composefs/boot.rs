@@ -1311,6 +1311,39 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
     }));
 }
 
+/// The EROFS format version of the `composefs=` karg emitted for BLS deployments.
+///
+/// `crate::bootc_composefs::status::ComposefsCmdline` writes the legacy V2
+/// `composefs=<digest>` karg for BLS, so the BLS deployment id must point at the
+/// V2 boot EROFS image (see [`boot_image_id_for_version`]).
+pub(crate) const BLS_KARG_FORMAT: composefs::erofs::format::FormatVersion =
+    composefs::erofs::format::FormatVersion::V2;
+
+/// Select the boot EROFS image id whose format version matches the deployment's
+/// actual `composefs=` boot karg.
+///
+/// A repository configured with `FormatConfig { default: V1, extra: [V2] }` commits both a V1 and a V2 boot
+/// EROFS image for a manifest. `generate_boot_image` returns the repo's primary
+/// (V1) id, but the deployment is keyed by the karg embedded in its UKI (or the
+/// BLS karg), so the id flowing into the boot-setup functions must match that
+/// karg's format version.
+pub(crate) fn boot_image_id_for_version(
+    repo: &crate::store::ComposefsRepository,
+    manifest_digest: &composefs_oci::OciDigest,
+    version: composefs::erofs::format::FormatVersion,
+) -> Result<Sha512HashValue> {
+    use composefs::erofs::format::FormatVersion;
+
+    let img = composefs_oci::oci_image::OciImage::open(repo, manifest_digest, None)
+        .context("Opening OCI image for boot id selection")?;
+    let id = match version {
+        FormatVersion::V1 => img.boot_image_ref_v1(),
+        FormatVersion::V2 => img.boot_image_ref_v2(),
+    }
+    .ok_or_else(|| anyhow!("No {version:?} boot EROFS image found for manifest"))?;
+    Ok(id.clone())
+}
+
 #[context("Setting up composefs boot")]
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
@@ -1391,25 +1424,37 @@ pub(crate) async fn setup_composefs_boot(
         )
     })?;
 
+    // The repo is configured to commit both V1 and V2 boot EROFS images, but the
+    // deployment must be keyed by the image whose format matches its actual boot
+    // karg: the V2 `composefs=` karg embedded in the UKI, or the BLS `composefs=`
+    // karg (also V2). The early `repo.mount(&id.to_hex())` above intentionally
+    // keeps using the `generate_boot_image` id: either format is a valid
+    // filesystem to mount for boot-resource discovery and bootloader install.
+    let karg_version = match boot_type {
+        BootType::Bls => BLS_KARG_FORMAT,
+        BootType::Uki => uki_boot_karg_version(&repo, &entries)?,
+    };
+    let deploy_id = boot_image_id_for_version(&repo, &pull_result.manifest_digest, karg_version)?;
+
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
             BootSetupType::Setup((&root_setup, &state, &postfetch)),
             repo,
-            &id,
+            &deploy_id,
             entry,
             mounted_root.dir(),
         )?,
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Setup((&root_setup, &state, &postfetch)),
             repo,
-            &id,
+            &deploy_id,
             entries,
         )?,
     };
 
     write_composefs_state(
         &root_setup.physical_root_path,
-        &id,
+        &deploy_id,
         &crate::spec::ImageReference::from(state.target_imgref.clone()),
         None,
         boot_type,
@@ -1420,6 +1465,34 @@ pub(crate) async fn setup_composefs_boot(
     .await?;
 
     Ok(())
+}
+
+/// Determine the EROFS format version of the `composefs=` karg embedded in the
+/// UKI among `entries`, so the deployment can be keyed by the matching boot image.
+pub(crate) fn uki_boot_karg_version(
+    repo: &crate::store::ComposefsRepository,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+) -> Result<composefs::erofs::format::FormatVersion> {
+    use composefs::erofs::format::FormatVersion;
+
+    let uki_entry = entries
+        .iter()
+        .find_map(|entry| match entry {
+            ComposefsBootEntry::Type2(t2) if matches!(t2.pe_type, PEType::Uki) => Some(t2),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("No UKI boot entry found"))?;
+
+    let efi_bin = read_file(&uki_entry.file, repo).context("Reading UKI .efi binary")?;
+    let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
+    let parsed = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline)
+        .context("Parsing composefs= karg from UKI cmdline")?
+        .context("No composefs= or composefs.digest.v1= karg found in UKI cmdline")?;
+
+    Ok(match parsed {
+        BootComposefsCmdline::V1 { .. } => FormatVersion::V1,
+        BootComposefsCmdline::V2 { .. } => FormatVersion::V2,
+    })
 }
 
 #[cfg(test)]

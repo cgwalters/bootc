@@ -141,13 +141,18 @@ pub(crate) fn validate_update(
     let mut fs = create_filesystem(repo, &oci_digest, Some(config_verity))?;
     fs.transform_for_boot(&repo)?;
 
-    let image_id = fs.compute_image_id(composefs::erofs::format::FormatVersion::V2);
+    // Match against both EROFS format ids: a deployment committed by a repo
+    // that generates both formats may be recorded under either the V1
+    // (composefs.digest.v1=) or V2 (composefs=) digest.  compute_image_id is a
+    // cheap in-memory EROFS generation.
+    let id_v1 = fs.compute_image_id(composefs::erofs::format::FormatVersion::V1);
+    let id_v2 = fs.compute_image_id(composefs::erofs::format::FormatVersion::V2);
 
     let all_deployments = host.all_composefs_deployments()?;
 
     let found_depl = all_deployments
         .iter()
-        .find(|d| d.deployment.verity == image_id.to_hex());
+        .find(|d| d.deployment.verity == id_v1.to_hex() || d.deployment.verity == id_v2.to_hex());
 
     if let Some(collision) = found_depl {
         if is_switch {
@@ -195,10 +200,14 @@ pub(crate) fn validate_update(
         .open_dir(STATE_DIR_RELATIVE)
         .context("Opening state dir")?;
 
-    if state_dir.exists(image_id.to_hex()) {
-        state_dir
-            .remove_dir_all(image_id.to_hex())
-            .context("Removing state")?;
+    // A deployment's state directory is keyed by its recorded verity, which is
+    // the V1-preferred id for repos that generate both formats.  Remove whichever
+    // id is present so no stale state is left behind regardless of format.
+    for id in [&id_v1, &id_v2] {
+        let hex = id.to_hex();
+        if state_dir.exists(&hex) {
+            state_dir.remove_dir_all(&hex).context("Removing state")?;
+        }
     }
 
     Ok(UpdateAction::Proceed)
@@ -264,14 +273,52 @@ pub(crate) async fn do_upgrade(
     )
     .await?;
 
+    let Some(entry) = entries.iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    let boot_type = BootType::from(entry);
+
+    // Select the deployment id whose EROFS format matches the actual boot karg:
+    // the V2 `composefs=` karg embedded in the UKI, or the BLS `composefs=` karg
+    // (also V2).  The early `repo.mount(&id.to_hex())` keeps using the raw
+    // `generate_boot_image` id — either format is a valid filesystem to mount.
+    let karg_version = match boot_type {
+        BootType::Bls => crate::bootc_composefs::boot::BLS_KARG_FORMAT,
+        BootType::Uki => crate::bootc_composefs::boot::uki_boot_karg_version(&repo, &entries)?,
+    };
+    let oci_digest: composefs_oci::OciDigest = manifest_digest
+        .parse()
+        .with_context(|| format!("Parsing config digest {manifest_digest}"))?;
+    // Compute both format ids upfront: we need them both for the collision check
+    // (a prior deployment may have been recorded under either V1 or V2), and we
+    // derive deploy_id from the karg-matched one to avoid a redundant call.
+    let id_v1 = crate::bootc_composefs::boot::boot_image_id_for_version(
+        &repo,
+        &oci_digest,
+        composefs::erofs::format::FormatVersion::V1,
+    )?;
+    let id_v2 = crate::bootc_composefs::boot::boot_image_id_for_version(
+        &repo,
+        &oci_digest,
+        composefs::erofs::format::FormatVersion::V2,
+    )?;
+    let deploy_id = if karg_version == composefs::erofs::format::FormatVersion::V1 {
+        &id_v1
+    } else {
+        &id_v2
+    };
+
     // If the target image produces the same fs-verity digest as any existing
     // deployment (booted, staged, rollback, or pinned), error out.  Two images
     // from different sources can have identical content; we cannot silently reuse
     // an existing state directory whose /etc was seeded from a different image.
+    // Check both format ids: an existing deployment may have been recorded under
+    // either V1 (composefs.digest.v1=) or V2 (composefs=) format.
     let all_deployments = host.all_composefs_deployments()?;
     if let Some(collision) = all_deployments
         .iter()
-        .find(|d| d.deployment.verity == id.to_hex())
+        .find(|d| d.deployment.verity == id_v1.to_hex() || d.deployment.verity == id_v2.to_hex())
     {
         anyhow::bail!(
             "Target image has the same fs-verity digest as the existing {:?} deployment.",
@@ -279,23 +326,18 @@ pub(crate) async fn do_upgrade(
         );
     }
 
-    let Some(entry) = entries.iter().next() else {
-        anyhow::bail!("No boot entries!");
-    };
-
+    // Mount using the raw generate_boot_image id: either EROFS format is valid.
     let mounted_fs = Dir::reopen_dir(
         &repo
             .mount(&id.to_hex())
             .context("Failed to mount composefs image")?,
     )?;
 
-    let boot_type = BootType::from(entry);
-
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
             BootSetupType::Upgrade((storage, booted_cfs, &host)),
             repo,
-            &id,
+            &deploy_id,
             entry,
             &mounted_fs,
         )?,
@@ -303,17 +345,17 @@ pub(crate) async fn do_upgrade(
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Upgrade((storage, booted_cfs, &host)),
             repo,
-            &id,
+            &deploy_id,
             entries,
         )?,
     };
 
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
-        &id,
+        &deploy_id,
         imgref,
         Some(StagedDeployment {
-            depl_id: id.to_hex(),
+            depl_id: deploy_id.to_hex(),
             finalization_locked: opts.download_only,
         }),
         boot_type,
@@ -335,7 +377,7 @@ pub(crate) async fn do_upgrade(
     )
     .await?;
 
-    apply_upgrade(storage, booted_cfs, &id.to_hex(), opts).await
+    apply_upgrade(storage, booted_cfs, &deploy_id.to_hex(), opts).await
 }
 
 #[context("Upgrading composefs")]
