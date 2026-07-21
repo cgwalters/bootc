@@ -8,11 +8,26 @@ set -xeuo pipefail
 src=$1/out
 shift
 
-# Uninstall bootupd if present (we're switching to sd-boot managed differently)
-if rpm -q bootupd &>/dev/null; then
-  rpm -e bootupd
-  rm -vrf /usr/lib/bootupd/updates
+# systemd-boot (and, when sealed, the UKI) is signed and booted directly
+# with our own Secure Boot key, so shim is never in the trust chain
+# regardless of sealing. Uninstall bootupd (managed differently for
+# sd-boot) and shim together so neither lingers in the image.
+case "$(uname -m)" in
+  x86_64) shim_pkg=shim-x64 ;;
+  aarch64) shim_pkg=shim-aa64 ;;
+  *) shim_pkg="" ;;
+esac
+
+pkgs_to_remove=()
+for pkg in bootupd "${shim_pkg}"; do
+  [ -n "${pkg}" ] || continue
+  rpm -q "${pkg}" &>/dev/null && pkgs_to_remove+=("${pkg}")
+done
+
+if [ "${#pkgs_to_remove[@]}" -gt 0 ]; then
+  rpm -e "${pkgs_to_remove[@]}"
 fi
+rm -vrf /usr/lib/bootupd/updates
 
 # First install the unsigned systemd-boot RPM to get the package in place
 rpm -Uvh --replacepkgs "${src}"/*.rpm
