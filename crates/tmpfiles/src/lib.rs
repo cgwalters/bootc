@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fmt::Write as WriteFmt;
 use std::io::{BufRead, BufReader, Write as StdWrite};
 use std::iter::Peekable;
@@ -18,6 +18,9 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use rustix::fs::Mode;
 use rustix::path::Arg;
 use thiserror::Error;
+
+mod path_resolution;
+use path_resolution::{PathIdentity, PathResolver};
 
 const TMPFILESD: &str = "usr/lib/tmpfiles.d";
 const ETC_TMPFILESD: &str = "etc/tmpfiles.d";
@@ -164,17 +167,21 @@ where
     Ok(PathBuf::from(r))
 }
 
-/// Canonicalize and escape a path value for tmpfiles.d
-/// At the current time the only canonicalization we do is remap /var/run -> /run.
+/// Canonicalize and escape a path value for tmpfiles.d.
+///
+/// This performs one canonicalization: remapping `/var/run` -> `/run`. This
+/// is hardcoded because `/var/run` is itself required to be a symlink
+/// pointing *out* to the real `/run` (see `Error::FoundVarRunNonSymlink`).
+/// The walker never recurses into `/var/run`, so this rewrite only ever
+/// applies to the top-level entry itself.
 fn canonicalize_escape_path<W: std::fmt::Write>(path: &Path, out: &mut W) -> std::fmt::Result {
-    // systemd-tmpfiles complains loudly about writing to /var/run;
-    // ideally, all of the packages get fixed for this but...eh.
-    let path = if path.starts_with("/var/run") {
-        let rest = &path.as_os_str().as_bytes()[4..];
-        Path::new(OsStr::from_bytes(rest))
-    } else {
-        path
-    };
+    if let Ok(rest) = path.strip_prefix("/var/run") {
+        let mut rewritten = PathBuf::from("/run");
+        if !rest.as_os_str().is_empty() {
+            rewritten.push(rest);
+        }
+        return escape_path(&rewritten, out);
+    }
     escape_path(path, out)
 }
 
@@ -263,6 +270,7 @@ pub fn var_to_tmpfiles<U: uzers::Users, G: uzers::Groups>(
     let mut entries = BTreeSet::new();
     let mut prefix = PathBuf::from("/var");
     let mut unsupported = Vec::new();
+    let var_identity = dir_dev_ino(rootfs, "var")?;
     convert_path_to_tmpfiles_d_recurse(
         &TmpfilesConvertConfig {
             users,
@@ -274,6 +282,7 @@ pub fn var_to_tmpfiles<U: uzers::Users, G: uzers::Groups>(
         &mut entries,
         &mut unsupported,
         &mut prefix,
+        var_identity,
     )?;
 
     // If there's no entries, don't write a file
@@ -312,12 +321,23 @@ pub fn var_to_tmpfiles<U: uzers::Users, G: uzers::Groups>(
     })
 }
 
+/// The `(dev, ino)` identity of `path` (relative to `dir`), used as the
+/// "parent" half of a [`PathIdentity`] lookup key.
+fn dir_dev_ino(dir: &Dir, path: &str) -> Result<(u64, u64)> {
+    let meta = dir.metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
+}
+
 /// Configuration for recursive tmpfiles conversion
 struct TmpfilesConvertConfig<'a, U: uzers::Users, G: uzers::Groups> {
     users: &'a U,
     groups: &'a G,
     rootfs: &'a Dir,
-    existing: &'a BTreeMap<PathBuf, String>,
+    /// tmpfiles.d entries already declared for `/var`, keyed by the
+    /// *physical identity* of their resolved location (see
+    /// `PathResolver::resolve_parent_identity`), matching what this walker
+    /// actually encounters on disk.
+    existing: &'a BTreeMap<PathIdentity, String>,
     readonly: bool,
 }
 
@@ -332,15 +352,20 @@ fn convert_path_to_tmpfiles_d_recurse<U: uzers::Users, G: uzers::Groups>(
     out_entries: &mut BTreeSet<String>,
     out_unsupported: &mut Vec<PathBuf>,
     prefix: &mut PathBuf,
+    dir_identity: (u64, u64),
 ) -> Result<()> {
     let relpath = prefix.strip_prefix("/").unwrap();
     for subpath in config.rootfs.read_dir(relpath)? {
         let subpath = subpath?;
         let meta = subpath.metadata()?;
         let fname = subpath.file_name();
-        prefix.push(fname);
+        prefix.push(&fname);
 
-        let has_tmpfiles_entry = config.existing.contains_key(prefix);
+        // `existing` is keyed by physical identity (see
+        // `PathResolver::resolve_parent_identity`), matching what we
+        // encounter here directly -- no alias lookup needed.
+        let key = PathIdentity::new(dir_identity.0, dir_identity.1, fname);
+        let has_tmpfiles_entry = config.existing.contains_key(&key);
 
         // Translate this file entry.
         if !has_tmpfiles_entry {
@@ -381,8 +406,18 @@ fn convert_path_to_tmpfiles_d_recurse<U: uzers::Users, G: uzers::Groups>(
             // SAFETY: We know this path is absolute
             let relpath = prefix.strip_prefix("/").unwrap();
             // Avoid traversing mount points by default
-            if config.rootfs.open_dir_noxdev(relpath)?.is_some() {
-                convert_path_to_tmpfiles_d_recurse(config, out_entries, out_unsupported, prefix)?;
+            if let Some(subdir) = config.rootfs.open_dir_noxdev(relpath)? {
+                // Reuse the fd we just opened (to decide whether to recurse)
+                // to also cheaply get this subdirectory's own identity, so
+                // we only pay for one `fstat` per *directory*, not per file.
+                let sub_meta = subdir.dir_metadata()?;
+                convert_path_to_tmpfiles_d_recurse(
+                    config,
+                    out_entries,
+                    out_unsupported,
+                    prefix,
+                    (sub_meta.dev(), sub_meta.ino()),
+                )?;
                 let relpath = prefix.strip_prefix("/").unwrap();
                 if !config.readonly {
                     config.rootfs.remove_dir_all(relpath)?;
@@ -435,6 +470,7 @@ pub fn find_missing_tmpfiles_current_root() -> Result<TmpfilesResult> {
     let mut prefix = PathBuf::from("/var");
     let mut tmpfiles = BTreeSet::new();
     let mut unsupported = Vec::new();
+    let var_identity = dir_dev_ino(&rootfs, "var")?;
     convert_path_to_tmpfiles_d_recurse(
         &TmpfilesConvertConfig {
             users: &usergroups,
@@ -446,6 +482,7 @@ pub fn find_missing_tmpfiles_current_root() -> Result<TmpfilesResult> {
         &mut tmpfiles,
         &mut unsupported,
         &mut prefix,
+        var_identity,
     )?;
     Ok(TmpfilesResult {
         tmpfiles,
@@ -453,12 +490,15 @@ pub fn find_missing_tmpfiles_current_root() -> Result<TmpfilesResult> {
     })
 }
 
-/// Read all tmpfiles.d entries from a single directory
+/// Read all tmpfiles.d entries from a single directory. Declared paths are
+/// canonicalized against `rootfs` (see `PathResolver`) so the returned map is
+/// keyed by physical identity.
 fn read_tmpfiles_from_dir(
     rootfs: &Dir,
     dir_path: &str,
+    resolver: &PathResolver,
     generation: &mut BootcTmpfilesGeneration,
-) -> Result<BTreeMap<PathBuf, String>> {
+) -> Result<BTreeMap<PathIdentity, String>> {
     let Some(tmpfiles_dir) = rootfs.open_dir_optional(dir_path)? else {
         return Ok(Default::default());
     };
@@ -486,7 +526,18 @@ fn read_tmpfiles_from_dir(
                 continue;
             }
             let path = tmpfiles_entry_get_path(&line)?;
-            result.insert(path.to_owned(), line);
+            // Canonicalize against the physical rootfs so `existing` is keyed
+            // by the identity of what the `/var` walker actually encounters
+            // on disk (e.g. `/root/.ssh` -> the identity of
+            // `/var/roothome/.ssh`), rather than the raw declared path. See
+            // `PathResolver`.
+            let Some(identity) = resolver.resolve_parent_identity(&path)? else {
+                // Nothing can physically exist beneath a missing parent
+                // directory, so the `/var` walker will never need to match
+                // this declared entry anyway.
+                continue;
+            };
+            result.insert(identity, line);
         }
     }
     Ok(result)
@@ -497,14 +548,17 @@ fn read_tmpfiles_from_dir(
 ///
 /// This function reads from both `/usr/lib/tmpfiles.d` and `/etc/tmpfiles.d`,
 /// with `/etc` entries taking precedence (matching systemd's behavior).
-fn read_tmpfiles(rootfs: &Dir) -> Result<(BTreeMap<PathBuf, String>, BootcTmpfilesGeneration)> {
+fn read_tmpfiles(
+    rootfs: &Dir,
+) -> Result<(BTreeMap<PathIdentity, String>, BootcTmpfilesGeneration)> {
     let mut generation = BootcTmpfilesGeneration::default();
+    let resolver = PathResolver::new(rootfs)?;
 
     // Read from /usr/lib/tmpfiles.d first (system/package-provided)
-    let mut result = read_tmpfiles_from_dir(rootfs, TMPFILESD, &mut generation)?;
+    let mut result = read_tmpfiles_from_dir(rootfs, TMPFILESD, &resolver, &mut generation)?;
 
     // Read from /etc/tmpfiles.d and merge (user-provided, takes precedence)
-    let etc_result = read_tmpfiles_from_dir(rootfs, ETC_TMPFILESD, &mut generation)?;
+    let etc_result = read_tmpfiles_from_dir(rootfs, ETC_TMPFILESD, &resolver, &mut generation)?;
     // /etc entries override /usr/lib entries for the same path
     result.extend(etc_result);
 
@@ -653,6 +707,92 @@ mod tests {
         Ok(())
     }
 
+    /// Verify that a physical path under /var is recognized as covered by a
+    /// tmpfiles.d entry declared via its conventional alias, e.g. systemd's
+    /// `provision.conf` declares `/root/.ssh` even though on stateless-root
+    /// systems `/root` is a symlink to the physical `/var/roothome`. The
+    /// symlink is resolved against the real rootfs at match time, so this
+    /// works for whatever alias happens to be present there.
+    #[test]
+    fn test_tmpfiles_d_root_alias() -> anyhow::Result<()> {
+        // Prepare a minimal rootfs as playground.
+        let rootfs = &newroot()?;
+        let userdb = &mock_userdb();
+
+        rootfs.write(
+            Path::new(TMPFILESD).join("systemd.conf"),
+            indoc::indoc! { r#"
+            d /var/roothome 0700 root root -
+            d /root/.ssh 0700 root root -
+        "#},
+        )?;
+
+        rootfs.create_dir_all("var/roothome/.ssh")?;
+        rootfs.symlink("var/roothome", "root")?;
+
+        let w = var_to_tmpfiles(rootfs, userdb, userdb).unwrap();
+        assert_eq!(w.unsupported, 0);
+        assert!(w.generated.is_none());
+
+        Ok(())
+    }
+
+    /// A second, differently-named alias scenario (using an absolute symlink
+    /// target this time), proving resolution isn't special-cased to `/root`.
+    #[test]
+    fn test_tmpfiles_d_home_alias() -> anyhow::Result<()> {
+        // Prepare a minimal rootfs as playground.
+        let rootfs = &newroot()?;
+        let userdb = &mock_userdb();
+
+        rootfs.write(
+            Path::new(TMPFILESD).join("systemd.conf"),
+            indoc::indoc! { r#"
+            d /var/home 0755 root root -
+            d /home/testuser 0700 testuser testuser -
+        "#},
+        )?;
+
+        rootfs.create_dir_all("var/home/testuser")?;
+        rootfs.symlink_contents("/var/home", "home")?;
+
+        let w = var_to_tmpfiles(rootfs, userdb, userdb).unwrap();
+        assert_eq!(w.unsupported, 0);
+        assert!(w.generated.is_none());
+
+        Ok(())
+    }
+
+    /// Like `test_tmpfiles_d_root_alias`, but the symlink is nested two
+    /// levels deep under /var instead of being a top-level entry, proving
+    /// `PathResolver::resolve_parent_identity` resolves symlinks anywhere
+    /// along the path, not just at the top level.
+    #[test]
+    fn test_tmpfiles_d_nested_symlink() -> anyhow::Result<()> {
+        // Prepare a minimal rootfs as playground.
+        let rootfs = &newroot()?;
+        let userdb = &mock_userdb();
+
+        rootfs.write(
+            Path::new(TMPFILESD).join("systemd.conf"),
+            indoc::indoc! { r#"
+            d /var/lib 0755 root root -
+            d /var/lib/machines 0755 root root -
+            L /var/lib/portables - - - - machines
+            d /var/lib/portables/myimage 0755 root root -
+        "#},
+        )?;
+
+        rootfs.create_dir_all("var/lib/machines/myimage")?;
+        rootfs.symlink("machines", "var/lib/portables")?;
+
+        let w = var_to_tmpfiles(rootfs, userdb, userdb).unwrap();
+        assert_eq!(w.unsupported, 0);
+        assert!(w.generated.is_none());
+
+        Ok(())
+    }
+
     /// Verify that we emit ignores for regular files
     #[test]
     fn test_log_regfile() -> anyhow::Result<()> {
@@ -685,6 +825,7 @@ mod tests {
             similar_asserts::assert_eq!(&s, entry);
         }
 
+        // The /var/run -> /run rewrite remains hardcoded.
         let quoting_cases = &[
             ("/var/foo bar", r#"/var/foo\x20bar"#),
             ("/var/run", "/run"),
