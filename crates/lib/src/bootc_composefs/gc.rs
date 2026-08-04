@@ -488,6 +488,10 @@ pub(crate) async fn composefs_gc(
     // images for deployments that predate the manifest→image link;
     // once all deployments have been pulled with the new code, these
     // become redundant.
+    // `Repository::gc()` takes an exclusive flock on the repository file as its
+    // first action. Callers must ensure no other `Repository` handle on that
+    // same underlying file is still alive when this runs, or it will deadlock
+    // (see update.rs's do_upgrade() for an example of getting this wrong).
     let gc_result = if gc_opts.dry_run {
         booted_cfs.repo.gc_dry_run(&additional_roots)?
     } else {

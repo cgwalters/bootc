@@ -328,6 +328,20 @@ pub(crate) async fn do_upgrade(
         )?,
     };
 
+    // `repo` holds its own flock(LOCK_SH) on /sysroot/composefs, taken out by
+    // pull_composefs_repo() on a *different* open-file-description than the
+    // one `booted_cfs.repo` uses. Below, composefs_gc() will ask `booted_cfs.repo`
+    // to take flock(LOCK_EX) on the same underlying file. Since two independent
+    // opens of the same file by one process don't share flock() state, that
+    // exclusive lock would block forever on the shared lock we're still holding
+    // here unless we drop `repo` first. `mounted_fs` is a mount of `repo`'s
+    // content, so it's dropped alongside it for the same reason. (`entries` is
+    // already consumed by this point in the BootType::Uki arm above, so there's
+    // nothing left to drop there.)
+    // See https://github.com/bootc-dev/bootc/issues/2364.
+    drop(mounted_fs);
+    drop(repo);
+
     let staged_state = StagedDeployment {
         depl_id: id.to_hex(),
         finalization_locked: opts.download_only,
@@ -347,6 +361,10 @@ pub(crate) async fn do_upgrade(
 
     // We take into account the staged bootloader entries so this won't remove
     // the currently staged entry
+    //
+    // Note: this takes an exclusive flock via `booted_cfs.repo`; no other
+    // `Repository` handle on the same underlying file may still be alive here
+    // (see the `drop(repo)` above for why).
     composefs_gc(
         storage,
         booted_cfs,
