@@ -43,22 +43,58 @@ jobs:
   # Determine the OS matrix for CI jobs based on context:
   #   - merge_group / workflow_dispatch / ci/merge label: all OSes
   #   - ci/tier-1 label: centos-10 only (fast feedback on the primary target)
-  #   - plain PR: no heavy jobs
+  #   - PR with no merge queue configured: all OSes (the PR is the only gate,
+  #     so it must run the full suite; see the merge-queue check below)
+  #   - plain PR (merge queue active): no heavy jobs
+  #   - push to main: no heavy jobs (already verified pre-merge; a push here
+  #     is a record of what merged, not something new to gate)
   compute-ci-level:
-    runs-on: ubuntu-24.04
+    # Cheap metadata check (gh api + jq) — no need for a full VM.
+    runs-on: ubuntu-slim
     outputs:
       package_os_matrix: ${{ steps.matrix.outputs.package_os_matrix }}
       integration_os_matrix: ${{ steps.matrix.outputs.integration_os_matrix }}
       upgrade_os_matrix: ${{ steps.matrix.outputs.upgrade_os_matrix }}
       run_heavy: ${{ steps.matrix.outputs.run_heavy }}
+      merge_queue_enabled: ${{ steps.merge-queue.outputs.enabled }}
     steps:
+      # Detect at runtime whether `main` is currently protected by a GitHub
+      # merge queue (see https://github.com/bootc-dev/bootc/issues/2177).
+      # The tiered CI below only makes sense with a queue: it lets heavy jobs
+      # run for feedback on PRs without gating merges, because the queue
+      # re-verifies everything before landing. Without a queue, a PR is the
+      # *only* gate, so the heavy suite must be required directly on PRs
+      # again. Checking this dynamically means re-enabling the queue later
+      # doesn't require another manual flip of this workflow to go back to
+      # the tiered behavior.
+      #
+      # A branch's effective rules (aggregated across org- and repo-level
+      # rulesets) are public, unauthenticated info; a `merge_queue` rule is
+      # present only while a queue is actually configured for the branch.
+      - name: Check for a merge_queue rule on main
+        id: merge-queue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Let this fail outright if the API call fails, rather than
+          # guessing: required-checks-heavy (below) needs this job, so we
+          # never silently skip testing on a transient API hiccup.
+          rules=$(gh api "repos/${{ github.repository }}/rules/branches/main")
+          if echo "$rules" | jq -e 'any(.[]; .type == "merge_queue")' > /dev/null; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Compute OS matrices
         id: matrix
         run: |
           LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
           EVENT='${{ github.event_name }}'
+          MERGE_QUEUE_ENABLED='${{ steps.merge-queue.outputs.enabled }}'
 
           if [[ "$EVENT" == "merge_group" || "$EVENT" == "workflow_dispatch" ]] \
+              || [[ "$EVENT" == "pull_request" && "$MERGE_QUEUE_ENABLED" != "true" ]] \
               || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; then
             # Full suite: all OSes
             echo 'package_os_matrix=["fedora-43","fedora-44","fedora-45","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
@@ -572,14 +608,20 @@ jobs:
           name: container-export-test-${{ env.ARCH }}
           path: target/anaconda-test/*.log
 
-  # Runs only in merge_group / workflow_dispatch and gates the full heavy suite.
-  # Skipped on PRs, so required-checks (below) sees it as 'skipped' == success there.
+  # Gates the full heavy suite. Runs in merge_group / workflow_dispatch, and
+  # also directly on PRs whenever compute-ci-level found no merge queue
+  # active (see the merge-queue check in that job) — in that case a PR is
+  # the only gate, so this must actually require the heavy jobs rather than
+  # being skipped.
+  # (Deliberately not extended to plain `push`: a push to main is a record of
+  # what already merged, not something new to gate.)
   # Uses always() so it still reports a failure when an upstream heavy job failed,
   # rather than being skipped along with it.
-  required-checks-merge:
-    if: ${{ always() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') }}
+  required-checks-heavy:
+    if: ${{ always() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.compute-ci-level.outputs.merge_queue_enabled != 'true')) }}
     needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export]
-    runs-on: ubuntu-latest
+    # Cheap aggregation (jq only) — no need for a full VM.
+    runs-on: ubuntu-slim
     steps:
       - name: Check all jobs
         env:
@@ -592,14 +634,18 @@ jobs:
           fi
 
   # Sentinel job — configure this single name in repo required-status-checks settings.
-  # On PRs: gates only the light always-run jobs; required-checks-merge is skipped
-  # (treated as success) so ci/merge heavy jobs run for feedback but don't block
-  # merge-queue entry — those jobs run again in the queue anyway with fresh artifacts.
-  # In merge_group: required-checks-merge has already verified the full suite above.
+  # With a merge queue active: gates only the light always-run jobs on PRs;
+  # required-checks-heavy is skipped there (treated as success) so ci/merge
+  # heavy jobs run for feedback but don't block merge-queue entry — those jobs
+  # run again in the queue anyway with fresh artifacts. In merge_group,
+  # required-checks-heavy has already verified the full suite above.
+  # Without a merge queue: required-checks-heavy runs and gates directly on
+  # PRs too, since there's no queue left to re-verify anything afterwards.
   required-checks:
     if: always()
-    needs: [compute-ci-level, validate, cargo-deny, docs, required-checks-merge]
-    runs-on: ubuntu-latest
+    needs: [compute-ci-level, validate, cargo-deny, docs, required-checks-heavy]
+    # Cheap aggregation (jq only) — no need for a full VM.
+    runs-on: ubuntu-slim
     steps:
       - name: Check required jobs
         env:
