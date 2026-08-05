@@ -38,7 +38,7 @@ def first_boot [] {
 
     let result = do { bootc switch --transport containers-storage localhost/dump-diff } | complete
 
-    let actual_digest = ./bootc internals cfs oci compute-id $"@(podman images --no-trunc | grep dump-diff | awk '{print $3}')"
+    let actual_digest = bootc internals cfs oci compute-id $"@(podman images --no-trunc | grep dump-diff | awk '{print $3}')"
 
     assert ($result.exit_code != 0) "bootc switch should fail"
 
