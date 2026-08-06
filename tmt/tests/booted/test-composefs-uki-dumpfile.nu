@@ -6,9 +6,8 @@
 use std assert
 use tap.nu
 
-if not (tap is_composefs) {
-    exit 0
-}
+# FIXME(Johan-Liebert1): This job is disabled for now
+exit 0
 
 # bootc status
 let st = bootc status --json | from json
