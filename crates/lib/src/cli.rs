@@ -1220,7 +1220,7 @@ pub(crate) fn prepare_for_write() -> Result<()> {
     }
     crate::cli::require_root(false)?;
     ensure_self_unshared_mount_namespace()?;
-    if crate::lsm::selinux_enabled()? && !crate::lsm::selinux_ensure_install()? {
+    if crate::lsm::selinux_enabled() && !crate::lsm::selinux_ensure_install()? {
         tracing::debug!("Do not have install_t capabilities");
     }
     ENTERED.store(true, Ordering::SeqCst);
@@ -2318,7 +2318,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 }
             },
             InternalsOpts::Selinux(SelinuxOpts::IsUnlabeled { path }) => {
-                ensure!(crate::lsm::selinux_enabled()?, "SELinux is not enabled");
+                ensure!(crate::lsm::selinux_enabled(), "SELinux is not enabled");
                 let path = path
                     .strip_prefix("/")
                     .expect("absolute paths have a root prefix");

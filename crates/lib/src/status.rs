@@ -102,7 +102,7 @@ fn check_selinux_policy_compatible(
     target_deployment: &ostree::Deployment,
 ) -> Result<bool> {
     // Only check if SELinux is enabled
-    if !crate::lsm::selinux_enabled()? {
+    if !crate::lsm::selinux_enabled() {
         return Ok(true);
     }
 

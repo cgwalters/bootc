@@ -121,7 +121,7 @@ pub(crate) fn are_selinux_policies_compatible(
     booted_cmdline: &ComposefsCmdline,
     depl_id: &str,
 ) -> Result<bool> {
-    if !selinux_enabled()? {
+    if !selinux_enabled() {
         return Ok(true);
     }
 

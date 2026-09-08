@@ -35,8 +35,20 @@ fn unlabeled_type() -> Result<CString> {
     context_type(context.as_bytes())
 }
 
-#[context("Querying selinux availability")]
-pub(crate) fn selinux_enabled() -> Result<bool> {
+/// Whether SELinux is enabled for the current process.
+///
+/// libselinux caches this state process-wide, so mounting selinuxfs requires a
+/// re-exec before this result can change.
+pub(crate) fn selinux_enabled() -> bool {
+    selinux::kernel_support() != selinux::KernelSupport::Unsupported
+}
+
+/// Whether SELinux is enabled on the host, as observed from PID 1's mount namespace.
+///
+/// This bypasses libselinux's process-cached state and is only appropriate while
+/// bootstrapping the selinuxfs mount before re-exec.
+#[context("Querying host SELinux availability")]
+pub(crate) fn host_selinux_enabled() -> Result<bool> {
     Path::new("/proc/1/root/sys/fs/selinux/enforce")
         .try_exists()
         .map_err(Into::into)
@@ -446,7 +458,9 @@ pub(crate) fn ensure_dir_labeled_recurse(
     use cap_std_ext::dirext::WalkConfiguration;
     use std::ops::ControlFlow;
 
-    let unlabeled_type = selinux_enabled()?.then(unlabeled_type).transpose()?;
+    // When SELinux is unavailable to this process, retain the conservative
+    // xattr-presence behavior in `has_security_selinux_inner`.
+    let unlabeled_type = selinux_enabled().then(unlabeled_type).transpose()?;
     // Juggle the cap-std requirement for relative paths vs the libselinux
     // requirement for absolute paths by special casing the empty string "" as "."
     // just for the initial directory enumeration.

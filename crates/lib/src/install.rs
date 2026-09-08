@@ -1381,7 +1381,7 @@ pub(crate) fn reexecute_self_for_selinux_if_needed(
 ) -> Result<SELinuxFinalState> {
     // If the target state has SELinux enabled, we need to check the host state.
     if srcdata.selinux {
-        let host_selinux = crate::lsm::selinux_enabled()?;
+        let host_selinux = crate::lsm::host_selinux_enabled()?;
         tracing::debug!("Target has SELinux, host={host_selinux}");
         let r = if override_disable_selinux {
             println!("notice: Target has SELinux enabled, overriding to disable");
