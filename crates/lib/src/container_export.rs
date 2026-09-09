@@ -182,7 +182,7 @@ fn export_filesystem_walk<W: Write>(
 
         let file_type = entry.file_type;
         if file_type.is_dir() {
-            add_directory_to_tar_from_walk(tar_builder, entry.dir, path, relative_path, sepolicy)
+            add_directory_to_tar_from_walk(tar_builder, entry.entry, path, relative_path, sepolicy)
                 .map_err(std::io::Error::other)?;
         } else if file_type.is_file() {
             add_file_to_tar_from_walk(
@@ -220,14 +220,19 @@ fn export_filesystem_walk<W: Write>(
 
 fn add_directory_to_tar_from_walk<W: Write>(
     tar_builder: &mut tar::Builder<W>,
-    dir: &cap_std_ext::cap_std::fs::Dir,
+    entry: &cap_std_ext::cap_std::fs::DirEntry,
     absolute_path: &std::path::Path,
     relative_path: &std::path::Path,
     sepolicy: Option<&ostree::SePolicy>,
 ) -> Result<()> {
     use cap_std_ext::cap_primitives::fs::PermissionsExt;
 
-    let metadata = dir.dir_metadata()?;
+    let metadata = entry.metadata().with_context(|| {
+        format!(
+            "Failed to read directory metadata: {}",
+            relative_path.display()
+        )
+    })?;
     let mut header = tar_header_from_meta(tar::EntryType::Directory, 0, &metadata);
 
     if let Some(policy) = sepolicy {
@@ -422,6 +427,7 @@ fn add_selinux_pax_extension<W: Write>(
 mod tests {
     use super::*;
     use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
+    use std::os::unix::fs::PermissionsExt;
 
     /// Walk `root` (with SELinux labeling disabled) and return the set of
     /// relative paths that ended up in the resulting tar archive.
@@ -437,6 +443,34 @@ mod tests {
             .entries()?
             .map(|e| Ok(e?.path()?.to_string_lossy().into_owned()))
             .collect()
+    }
+
+    /// Walk `root` (with SELinux labeling disabled) and return modes for tar directories.
+    fn exported_directory_modes(
+        root: &std::path::Path,
+    ) -> Result<std::collections::BTreeMap<String, u32>> {
+        let dir = Dir::open_ambient_dir(root, ambient_authority())?;
+        let mut buf = Vec::new();
+        {
+            let mut tar_builder = tar::Builder::new(&mut buf);
+            export_filesystem_walk(&mut tar_builder, &dir, None)?;
+            tar_builder.finish()?;
+        }
+
+        let mut modes = std::collections::BTreeMap::new();
+        for entry in tar::Archive::new(buf.as_slice()).entries()? {
+            let entry = entry?;
+            if entry.header().entry_type() != tar::EntryType::Directory {
+                continue;
+            }
+            let path = entry
+                .path()?
+                .to_string_lossy()
+                .trim_end_matches('/')
+                .to_owned();
+            modes.insert(path, entry.header().mode()? & 0o7777);
+        }
+        Ok(modes)
     }
 
     #[test]
@@ -472,6 +506,31 @@ mod tests {
                 .any(|p| p == "var/tmp" || p.starts_with("var/tmp/")),
             "expected no /var/tmp entries, got: {paths:?}"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_export_preserves_directory_modes() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let root = tmpdir.path();
+        let directories = [
+            ("var", 0o2750),
+            ("var/lib", 0o0711),
+            ("var/lib/nested", 0o0751),
+            ("var/cache", 0o0700),
+        ];
+
+        for (path, mode) in directories {
+            let path = root.join(path);
+            std::fs::create_dir_all(&path)?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        }
+
+        let modes = exported_directory_modes(root)?;
+        for (path, expected) in directories {
+            assert_eq!(modes.get(path), Some(&expected), "mode for {path}");
+        }
 
         Ok(())
     }
