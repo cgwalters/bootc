@@ -1101,7 +1101,7 @@ fn write_pe_to_esp(
 
         let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
             .context("Parsing composefs=")?
-            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
+            .ok_or_else(|| anyhow::anyhow!("No composefs digest in UKI cmdline"))?;
         let composefs_digest = composefs_info.digest().clone();
         let missing_verity_allowed_cmdline = composefs_info.is_insecure();
 
@@ -1329,7 +1329,7 @@ fn prevalidate_uki_entries(
         let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
         let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
             .context("Parsing composefs=")?
-            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
+            .ok_or_else(|| anyhow::anyhow!("No composefs digest in UKI cmdline"))?;
         let composefs_digest = composefs_info.digest();
 
         validate_uki_fsverity_policy(
@@ -1390,7 +1390,7 @@ fn find_expected_composefs_digest(
         let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
         let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
             .context("Parsing composefs=")?
-            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
+            .ok_or_else(|| anyhow::anyhow!("No composefs digest in UKI cmdline"))?;
         let uki_name = uki_file_name(&entry.file_path)?;
         return Ok(Some(ExpectedComposefsDigest {
             digest: composefs_info.digest().clone(),
